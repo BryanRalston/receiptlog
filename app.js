@@ -1284,12 +1284,140 @@ const Export = (() => {
 })();
 
 
+// ─── Tutorial Module ────────────────────────────────────────────────────────
+const Tutorial = (() => {
+  let currentStep = 0;
+  const steps = [
+    { title: 'Welcome to ReceiptLog', text: 'Track every receipt, organize by job, and share reports with your team. Let\u2019s walk through how it works.', highlight: null, navigate: null },
+    { title: 'Your Dashboard', text: 'At a glance \u2014 total spend, active jobs, pending receipts, and gas costs. Everything you need before heading to the job site.', highlight: '.stats-grid', navigate: 'dashboard' },
+    { title: 'Pending Filter', text: 'Toggle between Pending and All. Pending shows receipts you haven\u2019t submitted yet \u2014 so nothing falls through the cracks.', highlight: '#dashboard-filter', navigate: null },
+    { title: 'Jobs', text: 'Tap Jobs to manage your projects. Each job tracks its own receipts, organized by store.', highlight: '#nav-jobs', navigate: 'jobs' },
+    { title: 'Create a Job', text: 'Tap + New Job to create a project. Add the job name, client, and site address. You can edit or delete jobs anytime.', highlight: '#btn-add-job', navigate: null },
+    { title: 'Job Cards', text: 'Your jobs appear as cards showing total spend and receipt count. Tap any card to drill into its receipts grouped by store.', highlight: '.jobs-list', navigate: null },
+    { title: 'Add a Receipt', text: 'Tap Add to log a new receipt. This is where you\u2019ll spend most of your time.', highlight: '#nav-add', navigate: 'add' },
+    { title: 'The Basics', text: 'Select the job, type the store name (it auto-suggests from your history), enter the amount, and pick the date.', highlight: '#receipt-form', navigate: null },
+    { title: 'Category & Details', text: 'Pick a category \u2014 Materials, Tools, Gas, Permits, Meals, Rental, or Other. Use the Details field to list exactly what you bought.', highlight: '#field-category', navigate: null },
+    { title: 'Gas & Photos', text: 'Flip the Gas toggle for fuel purchases \u2014 they\u2019ll show up in your Gas Log too. Snap a photo of the physical receipt for proof.', highlight: '.toggle-label', navigate: null },
+    { title: 'Gas Log', text: 'The Gas Log tracks all fuel purchases across every job in one place.', highlight: '#nav-gas', navigate: 'gas' },
+    { title: 'Gas Tracking', text: 'View gas by week or month. See your total, how many are pending, and how many are reimbursed. Tap + Add Gas to quickly log a fill-up.', highlight: '.gas-stats-bar', navigate: null },
+    { title: 'Inside a Job', text: 'Tap any job card to see all its receipts, grouped by store with subtotals. Tap a store header to collapse or expand that section.', highlight: null, navigate: null },
+    { title: 'Status Tracking', text: 'Each receipt has a status dot \u2014 orange means pending, green means submitted. Tap the dot to toggle it. Hit Mark All Submitted when you\u2019ve turned everything in.', highlight: null, navigate: null },
+    { title: 'Share Report', text: 'Tap Share Report to generate a professional report with summary, receipt table, and photos \u2014 all in one file. Share via email, text, or any app on your phone.', highlight: null, navigate: null },
+    { title: 'CSV Export', text: 'Need a spreadsheet? Tap CSV for a per-job export. The download button in the header exports everything across all jobs at once.', highlight: '#btn-export', navigate: 'dashboard' },
+    { title: 'Works Offline', text: 'ReceiptLog works without internet and all data stays on your device. Add it to your home screen for the full app experience \u2014 fast, private, always available.', highlight: null, navigate: null },
+    { title: 'You\u2019re All Set!', text: 'Start by creating a job and adding your first receipt. Tap the ? button anytime to replay this guide. Happy tracking!', highlight: null, navigate: null },
+  ];
+
+  const overlay = () => document.getElementById('tutorial-overlay');
+  const spotlight = () => document.getElementById('tutorial-spotlight');
+  const titleEl = () => document.getElementById('tutorial-title');
+  const textEl = () => document.getElementById('tutorial-text');
+  const counterEl = () => document.getElementById('tutorial-step-counter');
+  const backBtn = () => document.getElementById('tutorial-back');
+  const nextBtn = () => document.getElementById('tutorial-next');
+
+  function start() {
+    currentStep = 0;
+    overlay().style.display = '';
+    renderStep();
+  }
+
+  function close() {
+    overlay().style.display = 'none';
+    clearSpotlight();
+  }
+
+  function next() {
+    if (currentStep < steps.length - 1) {
+      currentStep++;
+      renderStep();
+    } else {
+      close();
+    }
+  }
+
+  function back() {
+    if (currentStep > 0) {
+      currentStep--;
+      renderStep();
+    }
+  }
+
+  function renderStep() {
+    const step = steps[currentStep];
+
+    counterEl().textContent = `STEP ${currentStep + 1} OF ${steps.length}`;
+    titleEl().textContent = step.title;
+    textEl().textContent = step.text;
+
+    // Back button visibility
+    backBtn().style.display = currentStep === 0 ? 'none' : '';
+
+    // Next button text
+    nextBtn().textContent = currentStep === steps.length - 1 ? 'Get Started' : 'Next \u2192';
+
+    // Navigate to view if specified
+    if (step.navigate) {
+      Router.navigate(step.navigate);
+    }
+
+    // Highlight element
+    clearSpotlight();
+    if (step.highlight) {
+      requestAnimationFrame(() => highlightElement(step.highlight));
+    }
+  }
+
+  function highlightElement(selector) {
+    const el = document.querySelector(selector);
+    if (!el) return;
+
+    const rect = el.getBoundingClientRect();
+    const pad = 8;
+    const sl = spotlight();
+    sl.style.display = 'block';
+    sl.style.top = (rect.top - pad + window.scrollY) + 'px';
+    sl.style.left = (rect.left - pad) + 'px';
+    sl.style.width = (rect.width + pad * 2) + 'px';
+    sl.style.height = (rect.height + pad * 2) + 'px';
+
+    // Scroll the highlighted element into view if needed
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function clearSpotlight() {
+    spotlight().style.display = 'none';
+  }
+
+  function init() {
+    document.getElementById('btn-tutorial').addEventListener('click', start);
+    document.getElementById('tutorial-close').addEventListener('click', close);
+    document.getElementById('tutorial-next').addEventListener('click', next);
+    document.getElementById('tutorial-back').addEventListener('click', back);
+
+    // Close on overlay click (outside modal)
+    overlay().addEventListener('click', (e) => {
+      if (e.target === overlay()) close();
+    });
+
+    // Show tutorial on first visit
+    if (!localStorage.getItem('receiptlog-tutorial-seen')) {
+      setTimeout(start, 500);
+      localStorage.setItem('receiptlog-tutorial-seen', '1');
+    }
+  }
+
+  return { init, start };
+})();
+
+
 // ─── App Init ───────────────────────────────────────────────────────────────
 (async () => {
   await DB.open();
   Router.init();
   AddReceipt.init();
   Export.init();
+  Tutorial.init();
 
   // Wire up "Add Gas" button in Gas Log view
   document.getElementById('btn-add-gas').addEventListener('click', () => {

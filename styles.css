@@ -1285,3 +1285,110 @@ small {
     gap: 16px;
   }
 }
+
+/* === Header Actions Group === */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+/* === Tutorial === */
+.tutorial-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.tutorial-spotlight {
+  position: absolute;
+  display: none;
+  border-radius: var(--radius);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  border: 2px solid var(--accent);
+  z-index: 301;
+  pointer-events: none;
+  transition: all 0.3s ease;
+}
+
+.tutorial-modal {
+  position: fixed;
+  bottom: 100px;
+  left: 16px;
+  right: 16px;
+  max-width: 380px;
+  margin: 0 auto;
+  background: var(--bg-white);
+  border-radius: 20px;
+  padding: 24px;
+  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(99, 102, 241, 0.1);
+  z-index: 302;
+  animation: modal-enter 0.3s ease;
+}
+
+.tutorial-step-counter {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  color: var(--accent);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.tutorial-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  line-height: 1.3;
+}
+
+.tutorial-text {
+  font-size: 0.9375rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 20px;
+}
+
+.tutorial-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.tutorial-nav .btn-primary {
+  flex: 1;
+}
+
+.tutorial-nav .btn-secondary {
+  flex: 0;
+  white-space: nowrap;
+}
+
+.tutorial-close-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-gray);
+  border: none;
+  border-radius: 50%;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background 0.2s ease;
+}
+
+.tutorial-close-btn:hover {
+  background: var(--border);
+  color: var(--text-primary);
+}

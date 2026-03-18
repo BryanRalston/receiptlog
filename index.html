@@ -39,13 +39,22 @@
   <!-- Top Header Bar -->
   <header class="header-bar" id="header-bar">
     <h1 class="header-title">ReceiptLog</h1>
-    <button id="btn-export" class="btn-icon" title="Export CSV" aria-label="Export">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-        <polyline points="7 10 12 15 17 10"/>
-        <line x1="12" y1="15" x2="12" y2="3"/>
-      </svg>
-    </button>
+    <div class="header-actions">
+      <button id="btn-tutorial" class="btn-icon" title="Tutorial" aria-label="Tutorial">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+      </button>
+      <button id="btn-export" class="btn-icon" title="Export CSV" aria-label="Export">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+      </button>
+    </div>
   </header>
 
   <!-- DASHBOARD VIEW -->
@@ -238,6 +247,21 @@
         </div>
         <button type="submit" class="btn-primary btn-block">Save Job</button>
       </form>
+    </div>
+  </div>
+
+  <!-- Tutorial Overlay -->
+  <div id="tutorial-overlay" class="tutorial-overlay" style="display:none;">
+    <div class="tutorial-spotlight" id="tutorial-spotlight"></div>
+    <div class="tutorial-modal" id="tutorial-modal">
+      <div class="tutorial-step-counter" id="tutorial-step-counter">STEP 1 OF 18</div>
+      <h3 class="tutorial-title" id="tutorial-title"></h3>
+      <p class="tutorial-text" id="tutorial-text"></p>
+      <div class="tutorial-nav">
+        <button id="tutorial-back" class="btn-secondary btn-sm">← Back</button>
+        <button id="tutorial-next" class="btn-primary btn-sm">Next →</button>
+      </div>
+      <button id="tutorial-close" class="tutorial-close-btn">✕</button>
     </div>
   </div>
 
