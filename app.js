@@ -1328,28 +1328,75 @@ const Export = (() => {
 })();
 
 
+// ─── Demo Data ─────────────────────────────────────────────────────────────
+const DemoData = (() => {
+  const DEMO_JOB_ID = 'demo-kitchen-remodel';
+
+  async function seed() {
+    const existing = await DB.get('jobs', DEMO_JOB_ID);
+    if (existing) return; // already seeded
+
+    const today = new Date().toISOString().split('T')[0];
+    const d1 = new Date(Date.now() - 345600000).toISOString().split('T')[0];
+    const d2 = new Date(Date.now() - 259200000).toISOString().split('T')[0];
+    const d3 = new Date(Date.now() - 172800000).toISOString().split('T')[0];
+    const d4 = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+
+    await DB.put('jobs', {
+      id: DEMO_JOB_ID,
+      name: 'Kitchen Remodel',
+      client: 'Smith Family',
+      address: '742 Evergreen Terrace',
+      status: 'active',
+      created: Date.now() - 400000000,
+    });
+
+    const receipts = [
+      { id: 'demo-r1', jobId: DEMO_JOB_ID, store: 'Home Depot', amount: 487.32, date: d1, category: 'Materials', notes: 'Cabinet hardware, hinges, drawer slides', isGas: false, submitted: true, created: Date.now() - 345600000 },
+      { id: 'demo-r2', jobId: DEMO_JOB_ID, store: 'Home Depot', amount: 1243.00, date: d2, category: 'Materials', notes: 'Quartz countertop slab, undermount sink', isGas: false, submitted: true, created: Date.now() - 259200000 },
+      { id: 'demo-r3', jobId: DEMO_JOB_ID, store: 'Lowes', amount: 189.99, date: d3, category: 'Tools', notes: 'Tile saw blade, carbide bits, level', isGas: false, submitted: false, created: Date.now() - 172800000 },
+      { id: 'demo-r4', jobId: DEMO_JOB_ID, store: 'Shell', amount: 62.40, date: d4, category: 'Gas', notes: 'Fill up — countertop pickup run', isGas: true, submitted: false, created: Date.now() - 86400000 },
+      { id: 'demo-r5', jobId: DEMO_JOB_ID, store: 'Lowes', amount: 74.50, date: today, category: 'Materials', notes: 'Grout, tile spacers, thinset mortar', isGas: false, submitted: false, created: Date.now() },
+    ];
+
+    for (const r of receipts) {
+      await DB.put('receipts', r);
+    }
+  }
+
+  async function clear() {
+    const receipts = await DB.getAll('receipts', 'jobId', DEMO_JOB_ID);
+    for (const r of receipts) {
+      await DB.remove('receipts', r.id);
+    }
+    await DB.remove('jobs', DEMO_JOB_ID);
+  }
+
+  return { DEMO_JOB_ID, seed, clear };
+})();
+
+
 // ─── Tutorial Module ────────────────────────────────────────────────────────
 const Tutorial = (() => {
   let currentStep = 0;
   const steps = [
-    { title: 'Welcome to ReceiptLog', text: 'Track every receipt, organize by job, and share reports with your team. Let\u2019s walk through how it works.', highlight: null, navigate: null },
-    { title: 'Your Dashboard', text: 'At a glance \u2014 total spend, active jobs, pending receipts, and gas costs. Everything you need before heading to the job site.', highlight: '.stats-grid', navigate: 'dashboard' },
-    { title: 'Pending Filter', text: 'Toggle between Pending and All. Pending shows receipts you haven\u2019t submitted yet \u2014 so nothing falls through the cracks.', highlight: '#dashboard-filter', navigate: null },
-    { title: 'Jobs', text: 'Tap Jobs to manage your projects. Each job tracks its own receipts, organized by store.', highlight: '#nav-jobs', navigate: 'jobs' },
-    { title: 'Create a Job', text: 'Tap + New Job to create a project. Add the job name, client, and site address. You can edit or delete jobs anytime.', highlight: '#btn-add-job', navigate: null },
-    { title: 'Job Cards', text: 'Your jobs appear as cards showing total spend and receipt count. Tap any card to drill into its receipts grouped by store.', highlight: '.jobs-list', navigate: null },
-    { title: 'Add a Receipt', text: 'Tap Add to log a new receipt. This is where you\u2019ll spend most of your time.', highlight: '#nav-add', navigate: 'add' },
-    { title: 'The Basics', text: 'Select the job, type the store name (it auto-suggests from your history), enter the amount, and pick the date.', highlight: '#receipt-form', navigate: null },
-    { title: 'Category & Details', text: 'Pick a category \u2014 Materials, Tools, Gas, Permits, Meals, Rental, or Other. Use the Details field to list exactly what you bought.', highlight: '#field-category', navigate: null },
-    { title: 'Gas & Photos', text: 'Flip the Gas toggle for fuel purchases \u2014 they\u2019ll show up in your Gas Log too. Snap a photo of the physical receipt for proof.', highlight: '.toggle-label', navigate: null },
-    { title: 'Gas Log', text: 'The Gas Log tracks all fuel purchases across every job in one place.', highlight: '#nav-gas', navigate: 'gas' },
-    { title: 'Gas Tracking', text: 'View gas by week or month. See your total, how many are pending, and how many are reimbursed. Tap + Add Gas to quickly log a fill-up.', highlight: '.gas-stats-bar', navigate: null },
-    { title: 'Inside a Job', text: 'Tap any job card to see all its receipts, grouped by store with subtotals. Tap a store header to collapse or expand that section.', highlight: null, navigate: null },
-    { title: 'Status Tracking', text: 'Each receipt has a status dot \u2014 orange means pending, green means submitted. Tap the dot to toggle it. Hit Mark All Submitted when you\u2019ve turned everything in.', highlight: null, navigate: null },
-    { title: 'Share Report', text: 'Tap Share Report to generate a professional report with summary, receipt table, and photos \u2014 all in one file. Share via email, text, or any app on your phone.', highlight: null, navigate: null },
-    { title: 'CSV Export', text: 'Need a spreadsheet? Tap CSV for a per-job export. The download button in the header exports everything across all jobs at once.', highlight: '#btn-export', navigate: 'dashboard' },
-    { title: 'Works Offline', text: 'ReceiptLog works without internet and all data stays on your device. Add it to your home screen for the full app experience \u2014 fast, private, always available.', highlight: null, navigate: null },
-    { title: 'You\u2019re All Set!', text: 'Start by creating a job and adding your first receipt. Tap the ? button anytime to replay this guide. Happy tracking!', highlight: null, navigate: null },
+    { title: 'Welcome to ReceiptLog', text: 'Track every receipt, organize by job, and share reports with your team. We\'ve loaded a sample project so you can see everything in action.', highlight: null, navigate: 'dashboard' },
+    { title: 'Your Dashboard', text: 'At a glance — total spend, active jobs, pending receipts, and gas costs. This is what it looks like with a real project loaded.', highlight: '.stats-grid', navigate: 'dashboard' },
+    { title: 'Pending Filter', text: 'Toggle between Pending and All. Pending shows receipts you haven\'t submitted yet — so nothing falls through the cracks.', highlight: '#dashboard-filter', navigate: null },
+    { title: 'Recent Receipts', text: 'Your latest receipts with store, amount, category, and details. Orange dot = still pending. These are from the sample Kitchen Remodel.', highlight: '.receipt-list', navigate: null },
+    { title: 'Jobs', text: 'Tap Jobs to see your projects. Each job tracks its own receipts organized by store.', highlight: '#nav-jobs', navigate: 'jobs' },
+    { title: 'Job Cards', text: 'Each card shows total spend and receipt count. Tap a card to drill into the details. Tap + New Job anytime to add more.', highlight: '.job-card', navigate: null },
+    { title: 'Inside a Job', text: 'Receipts grouped by store with subtotals. Tap a store header to collapse or expand it. This is the Kitchen Remodel breakdown.', highlight: '.receipt-groups', navigate: 'job-detail', navigateData: 'demo-kitchen-remodel' },
+    { title: 'Status Tracking', text: 'Orange dot = pending, green = submitted. Tap any dot to toggle. Hit Mark All Submitted when you\'ve turned in the batch.', highlight: '.receipt-card', navigate: null },
+    { title: 'Share Report', text: 'Generates a professional report with summary, receipt table, and photos — all in one file. Share via email, text, or any app on your phone.', highlight: '.btn-share-report', navigate: null },
+    { title: 'Add a Receipt', text: 'Select the job, enter the store and amount, pick a category, and list what you bought in the Details field.', highlight: '#nav-add', navigate: 'add' },
+    { title: 'The Form', text: 'Store names auto-suggest from your history. Use Details to itemize — "2x4 lumber, deck screws, joist hangers." Snap a photo for proof.', highlight: '#receipt-form', navigate: null },
+    { title: 'Gas & Photos', text: 'Flip the Gas toggle for fuel purchases — they show up in your Gas Log. Capture a photo of the physical receipt below.', highlight: '.toggle-label', navigate: null },
+    { title: 'Gas Log', text: 'All fuel purchases across every job in one place, grouped by week or month.', highlight: '#nav-gas', navigate: 'gas' },
+    { title: 'Gas Tracking', text: 'Total gas spend, pending count, and reimbursed count at a glance. Tap + Add Gas for a quick fill-up entry.', highlight: '#btn-add-gas', navigate: null },
+    { title: 'CSV Export', text: 'Each job has a CSV button for spreadsheets. The download icon in the header exports everything across all jobs.', highlight: '#btn-export', navigate: 'dashboard' },
+    { title: 'Works Offline', text: 'ReceiptLog works without internet. Add it to your home screen for the full app experience — fast, private, always available.', highlight: null, navigate: null },
+    { title: 'You\'re All Set!', text: 'Create a job and add your first receipt to get started. Tap ? anytime to replay this guide. Happy tracking!', highlight: null, navigate: null, isFinal: true },
   ];
 
   const overlay = () => document.getElementById('tutorial-overlay');
@@ -1360,15 +1407,21 @@ const Tutorial = (() => {
   const backBtn = () => document.getElementById('tutorial-back');
   const nextBtn = () => document.getElementById('tutorial-next');
 
-  function start() {
+  async function start() {
     currentStep = 0;
+    await DemoData.seed();
+    await Dashboard.render();
+    await new Promise(r => setTimeout(r, 100));
     overlay().style.display = '';
     renderStep();
   }
 
-  function close() {
+  async function close() {
     overlay().style.display = 'none';
     clearSpotlight();
+    await DemoData.clear();
+    Router.navigate('dashboard');
+    Dashboard.render();
   }
 
   function next() {
@@ -1400,16 +1453,27 @@ const Tutorial = (() => {
     // Next button text
     nextBtn().textContent = currentStep === steps.length - 1 ? 'Get Started' : 'Next \u2192';
 
+    backBtn().textContent = '\u2190 Back';
+
+    // Final step gets "Get Started" button
+    if (step.isFinal) {
+      nextBtn().textContent = 'Get Started';
+    }
+
     // Navigate to view if specified
     if (step.navigate) {
-      Router.navigate(step.navigate);
+      if (step.navigate === 'job-detail' && step.navigateData) {
+        Router.navigate('job-detail', step.navigateData);
+      } else {
+        Router.navigate(step.navigate);
+      }
     }
 
     // Highlight element
     clearSpotlight();
     if (step.highlight) {
       overlay().classList.remove('no-spotlight');
-      requestAnimationFrame(() => highlightElement(step.highlight));
+      requestAnimationFrame(() => setTimeout(() => highlightElement(step.highlight), 100));
     } else {
       overlay().classList.add('no-spotlight');
     }
@@ -1449,12 +1513,6 @@ const Tutorial = (() => {
     overlay().addEventListener('click', (e) => {
       if (e.target === overlay()) close();
     });
-
-    // Show tutorial on first visit
-    if (!localStorage.getItem('receiptlog-tutorial-seen')) {
-      setTimeout(start, 500);
-      localStorage.setItem('receiptlog-tutorial-seen', '1');
-    }
   }
 
   return { init, start };
@@ -1472,12 +1530,23 @@ const Tutorial = (() => {
   // Wire up "Add Gas" button in Gas Log view
   document.getElementById('btn-add-gas').addEventListener('click', () => {
     Router.navigate('add');
-    // After populateForm runs, preset gas fields
     setTimeout(() => {
       document.getElementById('field-category').value = 'Gas';
       document.getElementById('field-gas').checked = true;
     }, 50);
   });
 
+  // Seed demo data on first visit (before dashboard render)
+  if (!localStorage.getItem('receiptlog-has-data')) {
+    await DemoData.seed();
+    localStorage.setItem('receiptlog-has-data', '1');
+  }
+
   Dashboard.render();
+
+  // Auto-start tutorial on first visit
+  if (!localStorage.getItem('receiptlog-tutorial-seen')) {
+    setTimeout(() => Tutorial.start(), 600);
+    localStorage.setItem('receiptlog-tutorial-seen', '1');
+  }
 })();
