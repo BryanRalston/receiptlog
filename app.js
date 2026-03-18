@@ -1705,17 +1705,8 @@ const Tutorial = (() => {
     }, 50);
   });
 
-  // Seed demo data on first visit (before dashboard render)
-  if (!localStorage.getItem('receiptlog-has-data')) {
-    await DemoData.seed();
-    localStorage.setItem('receiptlog-has-data', '1');
-  }
+  // Clean up any leftover demo data from a previous tutorial
+  await DemoData.clear();
 
   Dashboard.render();
-
-  // Auto-start tutorial on first visit
-  if (!localStorage.getItem('receiptlog-tutorial-seen')) {
-    setTimeout(() => Tutorial.start(), 600);
-    localStorage.setItem('receiptlog-tutorial-seen', '1');
-  }
 })();
