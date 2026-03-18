@@ -6,7 +6,7 @@
   <title>ReceiptLog</title>
 
   <!-- PWA Meta -->
-  <meta name="theme-color" content="#2563EB">
+  <meta name="theme-color" content="#6366F1">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="ReceiptLog">
@@ -114,9 +114,26 @@
   <section id="view-gas" class="view">
     <div class="section-header">
       <h2>Gas Log</h2>
-      <div class="gas-summary">
+      <div class="gas-header-right">
+        <div class="filter-toggle" id="gas-period-toggle">
+          <button data-period="week" class="active">Week</button>
+          <button data-period="month">Month</button>
+        </div>
+        <button id="btn-add-gas" class="btn-primary btn-sm">+ Add Gas</button>
+      </div>
+    </div>
+    <div class="gas-stats-bar">
+      <div class="gas-stat">
         <span class="stat-label">Total</span>
         <span class="stat-value" id="gas-total">$0.00</span>
+      </div>
+      <div class="gas-stat">
+        <span class="stat-label">Pending</span>
+        <span class="stat-value" id="gas-pending">0</span>
+      </div>
+      <div class="gas-stat">
+        <span class="stat-label">Reimbursed</span>
+        <span class="stat-value" id="gas-reimbursed">0</span>
       </div>
     </div>
     <div id="gas-list" class="receipt-list">
@@ -166,16 +183,16 @@
           <option value="Other">Other</option>
         </select>
       </div>
+      <div class="form-group">
+        <label for="field-notes">Details</label>
+        <textarea id="field-notes" class="form-input form-textarea" rows="2" placeholder="What did you buy? List items here..."></textarea>
+      </div>
       <div class="form-row">
         <label class="toggle-label">
           <input id="field-gas" type="checkbox" class="toggle-input">
           <span class="toggle-switch"></span>
           <span>Gas Purchase</span>
         </label>
-      </div>
-      <div class="form-group">
-        <label for="field-notes">Notes</label>
-        <textarea id="field-notes" class="form-input form-textarea" rows="2" placeholder="Optional notes..."></textarea>
       </div>
       <div class="form-group">
         <label>Photo</label>

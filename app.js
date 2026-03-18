@@ -612,9 +612,35 @@ const Jobs = (() => {
 
 // ─── GasLog Module ──────────────────────────────────────────────────────────
 const GasLog = (() => {
+  let currentPeriod = 'week';
+
+  function getWeekKey(dateStr) {
+    const d = new Date(dateStr + 'T00:00:00');
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday start
+    const monday = new Date(d);
+    monday.setDate(diff);
+    return monday.toISOString().split('T')[0];
+  }
+
+  function getWeekLabel(mondayStr) {
+    const mon = new Date(mondayStr + 'T00:00:00');
+    const sun = new Date(mon);
+    sun.setDate(sun.getDate() + 6);
+    return mon.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' - ' +
+           sun.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+
+  function getMonthKey(dateStr) {
+    return dateStr.slice(0, 7); // "2026-03"
+  }
+
+  function getMonthLabel(monthKey) {
+    const d = new Date(monthKey + '-01T00:00:00');
+    return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  }
+
   async function render() {
-    const gasReceipts = await DB.getAll('receipts', 'isGas', 1);
-    // Also catch boolean true values
     const allReceipts = await DB.getAll('receipts');
     const filtered = allReceipts.filter((r) => r.isGas === true || r.isGas === 1);
 
@@ -622,8 +648,23 @@ const GasLog = (() => {
       .slice()
       .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
+    // Update stats bar
     const total = sorted.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+    const pendingCount = sorted.filter((r) => !r.submitted).length;
+    const reimbursedCount = sorted.filter((r) => !!r.submitted).length;
     document.getElementById('gas-total').textContent = formatMoney(total);
+    document.getElementById('gas-pending').textContent = pendingCount;
+    document.getElementById('gas-reimbursed').textContent = reimbursedCount;
+
+    // Wire up period toggle
+    const toggleEl = document.getElementById('gas-period-toggle');
+    toggleEl.querySelectorAll('button').forEach((btn) => {
+      btn.classList.toggle('active', btn.getAttribute('data-period') === currentPeriod);
+      btn.onclick = () => {
+        currentPeriod = btn.getAttribute('data-period');
+        render();
+      };
+    });
 
     const listEl = document.getElementById('gas-list');
     const emptyEl = document.getElementById('gas-empty');
@@ -642,23 +683,66 @@ const GasLog = (() => {
     const jobMap = {};
     jobs.forEach((j) => (jobMap[j.id] = j));
 
-    listEl.innerHTML = sorted
-      .map((r) => {
-        const job = jobMap[r.jobId];
-        const jobName = job ? escapeHTML(job.name) : 'Unknown Job';
-        const statusClass = r.submitted ? 'status-dot status-submitted' : 'status-dot';
-        const statusTitle = r.submitted ? 'Submitted' : 'Pending';
+    // Group by period
+    const groups = {};
+    sorted.forEach((r) => {
+      const key = currentPeriod === 'week' ? getWeekKey(r.date) : getMonthKey(r.date);
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(r);
+    });
+
+    // Sort group keys descending (most recent first)
+    const groupKeys = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+
+    listEl.innerHTML = groupKeys
+      .map((key) => {
+        const items = groups[key];
+        const groupTotal = items.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+        const groupPending = items.filter((r) => !r.submitted).length;
+        const groupReimbursed = items.filter((r) => !!r.submitted).length;
+        const label = currentPeriod === 'week' ? getWeekLabel(key) : getMonthLabel(key);
+
+        const statusParts = [];
+        if (groupPending > 0) statusParts.push(groupPending + ' pending');
+        if (groupReimbursed > 0) statusParts.push(groupReimbursed + ' reimbursed');
+
         return `
-        <div class="receipt-card" data-id="${r.id}">
-          <div class="receipt-meta"><span class="${statusClass}" title="${statusTitle}"></span> ${formatDate(r.date)} &middot; ${jobName}</div>
-          <div class="receipt-card-row">
-            <span class="receipt-store">${escapeHTML(r.store)}</span>
-            <span class="amount">${formatMoney(r.amount)}</span>
+        <div class="receipt-group">
+          <div class="receipt-group-header">
+            <span>${escapeHTML(label)}</span>
+            <div class="gas-group-meta">
+              <span class="amount">${formatMoney(groupTotal)}</span>
+              <span class="gas-group-status">${statusParts.join(' \u00b7 ')}</span>
+            </div>
           </div>
-          ${r.notes ? `<div class="receipt-notes">${escapeHTML(r.notes)}</div>` : ''}
+          <div class="receipt-group-items">
+            ${items.map((r) => {
+              const job = jobMap[r.jobId];
+              const jobName = job ? escapeHTML(job.name) : 'Unknown Job';
+              const statusClass = r.submitted ? 'status-dot status-submitted' : 'status-dot';
+              const statusTitle = r.submitted ? 'Submitted' : 'Pending';
+              return `
+              <div class="receipt-card" data-id="${r.id}">
+                <div class="receipt-meta"><span class="${statusClass}" title="${statusTitle}"></span> ${formatDate(r.date)} &middot; ${jobName}</div>
+                <div class="receipt-card-row">
+                  <span class="receipt-store">${escapeHTML(r.store)}</span>
+                  <span class="amount">${formatMoney(r.amount)}</span>
+                </div>
+                ${r.notes ? `<div class="receipt-notes">${escapeHTML(r.notes)}</div>` : ''}
+              </div>`;
+            }).join('')}
+          </div>
         </div>`;
       })
       .join('');
+
+    // Toggle collapsible groups
+    listEl.querySelectorAll('.receipt-group-header').forEach((header) => {
+      header.addEventListener('click', () => {
+        const items = header.nextElementSibling;
+        items.style.display = items.style.display === 'none' ? '' : 'none';
+      });
+    });
   }
 
   return { render };
@@ -933,5 +1017,16 @@ const Export = (() => {
   Router.init();
   AddReceipt.init();
   Export.init();
+
+  // Wire up "Add Gas" button in Gas Log view
+  document.getElementById('btn-add-gas').addEventListener('click', () => {
+    Router.navigate('add');
+    // After populateForm runs, preset gas fields
+    setTimeout(() => {
+      document.getElementById('field-category').value = 'Gas';
+      document.getElementById('field-gas').checked = true;
+    }, 50);
+  });
+
   Dashboard.render();
 })();
