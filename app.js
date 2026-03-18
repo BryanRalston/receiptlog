@@ -1364,13 +1364,19 @@ const Tutorial = (() => {
     // Highlight element
     clearSpotlight();
     if (step.highlight) {
+      overlay().classList.remove('no-spotlight');
       requestAnimationFrame(() => highlightElement(step.highlight));
+    } else {
+      overlay().classList.add('no-spotlight');
     }
   }
 
   function highlightElement(selector) {
     const el = document.querySelector(selector);
-    if (!el) return;
+    if (!el) {
+      overlay().classList.add('no-spotlight');
+      return;
+    }
 
     const rect = el.getBoundingClientRect();
     const pad = 8;
