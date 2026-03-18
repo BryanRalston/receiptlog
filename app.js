@@ -1334,7 +1334,7 @@ const Export = (() => {
   }
 
   function init() {
-    document.getElementById('btn-export').addEventListener('click', toCSV);
+    // Global CSV export removed from header — available via gear icon and per-job CSV button
   }
 
   return { init, jobToCSV, shareReport };
@@ -1564,7 +1564,7 @@ const Tutorial = (() => {
     { title: 'Gas & Photos', text: 'Flip the Gas toggle for fuel purchases — they show up in your Gas Log. Capture a photo of the physical receipt below.', highlight: '.toggle-label', navigate: null },
     { title: 'Gas Log', text: 'All fuel purchases across every job in one place, grouped by week or month.', highlight: '#nav-gas', navigate: 'gas' },
     { title: 'Gas Tracking', text: 'Total gas spend, pending count, and reimbursed count at a glance. Tap + Add Gas for a quick fill-up entry.', highlight: '#btn-add-gas', navigate: null },
-    { title: 'CSV Export', text: 'Each job has a CSV button for spreadsheets. The download icon in the header exports everything across all jobs.', highlight: '#btn-export', navigate: 'dashboard' },
+    { title: 'Backup & Export', text: 'Each job has a CSV button for spreadsheets. Tap the gear icon to backup all your data, restore on a new device, or export everything.', highlight: '#btn-data', navigate: 'dashboard' },
     { title: 'Works Offline', text: 'ReceiptLog works without internet. Add it to your home screen for the full app experience — fast, private, always available.', highlight: null, navigate: null },
     { title: 'You\'re All Set!', text: 'Create a job and add your first receipt to get started. Tap ? anytime to replay this guide. Happy tracking!', highlight: null, navigate: null, isFinal: true },
   ];
