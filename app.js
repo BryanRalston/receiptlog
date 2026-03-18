@@ -176,17 +176,8 @@ const Dashboard = (() => {
       DB.getAll('receipts'),
     ]);
 
-    const totalSpend = receipts.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
     const activeJobs = jobs.filter((j) => j.status === 'active').length;
     const pendingCount = receipts.filter((r) => !r.submitted).length;
-    const gasTotal = receipts
-      .filter((r) => r.isGas)
-      .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
-
-    document.getElementById('dashboard-total').textContent = formatMoney(totalSpend);
-    document.getElementById('dashboard-job-count').textContent = activeJobs;
-    document.getElementById('dashboard-pending-count').textContent = pendingCount;
-    document.getElementById('dashboard-gas-total').textContent = formatMoney(gasTotal);
 
     // Wire up filter toggle
     const filterEl = document.getElementById('dashboard-filter');
@@ -205,6 +196,17 @@ const Dashboard = (() => {
     const filtered = currentFilter === 'pending'
       ? receipts.filter((r) => !r.submitted)
       : receipts;
+
+    // Stats reflect the active filter
+    const totalSpend = filtered.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+    const gasTotal = filtered
+      .filter((r) => r.isGas)
+      .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+
+    document.getElementById('dashboard-total').textContent = formatMoney(totalSpend);
+    document.getElementById('dashboard-job-count').textContent = activeJobs;
+    document.getElementById('dashboard-pending-count').textContent = pendingCount;
+    document.getElementById('dashboard-gas-total').textContent = formatMoney(gasTotal);
 
     if (filtered.length === 0) {
       recentEl.style.display = 'none';
