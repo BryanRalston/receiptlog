@@ -168,6 +168,8 @@ function escapeHTML(str) {
 
 // ─── Dashboard Module ───────────────────────────────────────────────────────
 const Dashboard = (() => {
+  let currentFilter = 'pending'; // default to pending
+
   async function render() {
     const [jobs, receipts] = await Promise.all([
       DB.getAll('jobs'),
@@ -176,22 +178,42 @@ const Dashboard = (() => {
 
     const totalSpend = receipts.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
     const activeJobs = jobs.filter((j) => j.status === 'active').length;
-    const receiptCount = receipts.length;
+    const pendingCount = receipts.filter((r) => !r.submitted).length;
     const gasTotal = receipts
       .filter((r) => r.isGas)
       .reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
 
     document.getElementById('dashboard-total').textContent = formatMoney(totalSpend);
     document.getElementById('dashboard-job-count').textContent = activeJobs;
-    document.getElementById('dashboard-receipt-count').textContent = receiptCount;
+    document.getElementById('dashboard-pending-count').textContent = pendingCount;
     document.getElementById('dashboard-gas-total').textContent = formatMoney(gasTotal);
+
+    // Wire up filter toggle
+    const filterEl = document.getElementById('dashboard-filter');
+    filterEl.querySelectorAll('button').forEach((btn) => {
+      btn.classList.toggle('active', btn.getAttribute('data-filter') === currentFilter);
+      btn.onclick = () => {
+        currentFilter = btn.getAttribute('data-filter');
+        render();
+      };
+    });
 
     const recentEl = document.getElementById('dashboard-recent');
     const emptyEl = document.getElementById('dashboard-empty');
 
-    if (receipts.length === 0) {
+    // Apply filter
+    const filtered = currentFilter === 'pending'
+      ? receipts.filter((r) => !r.submitted)
+      : receipts;
+
+    if (filtered.length === 0) {
       recentEl.style.display = 'none';
       emptyEl.style.display = '';
+      if (currentFilter === 'pending' && receipts.length > 0) {
+        emptyEl.querySelector('p').textContent = 'All receipts submitted!';
+      } else {
+        emptyEl.querySelector('p').textContent = 'No receipts yet. Tap + to add your first one.';
+      }
       return;
     }
 
@@ -199,7 +221,7 @@ const Dashboard = (() => {
     emptyEl.style.display = 'none';
 
     // Sort by date descending, then by created descending
-    const sorted = receipts
+    const sorted = filtered
       .slice()
       .sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.created || 0) - (a.created || 0))
       .slice(0, 10);
@@ -212,9 +234,11 @@ const Dashboard = (() => {
       .map((r) => {
         const job = jobMap[r.jobId];
         const jobName = job ? escapeHTML(job.name) : 'Unknown Job';
+        const statusClass = r.submitted ? 'status-dot status-submitted' : 'status-dot';
+        const statusTitle = r.submitted ? 'Submitted' : 'Pending';
         return `
         <div class="receipt-card" data-id="${r.id}">
-          <div class="receipt-meta">${formatDate(r.date)} &middot; ${jobName}</div>
+          <div class="receipt-meta"><span class="${statusClass}" title="${statusTitle}"></span> ${formatDate(r.date)} &middot; ${jobName}</div>
           <div class="receipt-card-row">
             <span class="receipt-store">${escapeHTML(r.store)}</span>
             <span class="amount">${formatMoney(r.amount)}</span>
@@ -410,6 +434,7 @@ const Jobs = (() => {
 
     const totalSpend = allReceipts.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
     const badgeClass = job.status === 'active' ? 'badge-active' : 'badge-complete';
+    const pendingCount = allReceipts.filter((r) => !r.submitted).length;
 
     const headerEl = document.getElementById('job-detail-header');
     headerEl.innerHTML = `
@@ -423,10 +448,12 @@ const Jobs = (() => {
       </div>
       <div class="job-detail-stats">
         <span class="amount">${formatMoney(totalSpend)}</span>
-        <span class="job-detail-count">${allReceipts.length} receipt${allReceipts.length !== 1 ? 's' : ''}</span>
+        <span class="job-detail-count">${allReceipts.length} receipt${allReceipts.length !== 1 ? 's' : ''} &middot; ${pendingCount} pending</span>
       </div>
       <div class="job-detail-actions">
         <button class="btn-secondary btn-sm btn-edit-detail-job" data-id="${job.id}">Edit Job</button>
+        <button class="btn-secondary btn-sm btn-export-job" data-id="${job.id}">Export Job</button>
+        ${pendingCount > 0 ? `<button class="btn-mark-submitted btn-sm btn-mark-all-submitted" data-id="${job.id}">Mark All Submitted</button>` : ''}
         <button class="btn-danger btn-sm btn-delete-detail-job" data-id="${job.id}">Delete Job</button>
       </div>`;
 
@@ -434,6 +461,25 @@ const Jobs = (() => {
     headerEl.querySelector('.btn-edit-detail-job').addEventListener('click', async () => {
       await openJobModal(job.id);
     });
+
+    // Export Job button
+    headerEl.querySelector('.btn-export-job').addEventListener('click', () => {
+      Export.jobToCSV(job, allReceipts);
+    });
+
+    // Mark All Submitted button
+    const markAllBtn = headerEl.querySelector('.btn-mark-all-submitted');
+    if (markAllBtn) {
+      markAllBtn.addEventListener('click', async () => {
+        for (const r of allReceipts) {
+          if (!r.submitted) {
+            r.submitted = true;
+            await DB.put('receipts', r);
+          }
+        }
+        await renderDetail(jobId);
+      });
+    }
 
     // Delete button in detail header
     headerEl.querySelector('.btn-delete-detail-job').addEventListener('click', async () => {
@@ -479,9 +525,12 @@ const Jobs = (() => {
           <div class="receipt-group-items">
             ${items
               .map(
-                (r) => `
+                (r) => {
+                  const statusClass = r.submitted ? 'status-dot status-submitted' : 'status-dot';
+                  const statusTitle = r.submitted ? 'Submitted — tap to mark pending' : 'Pending — tap to mark submitted';
+                  return `
               <div class="receipt-card" data-id="${r.id}">
-                <div class="receipt-meta">${formatDate(r.date)}</div>
+                <div class="receipt-meta"><span class="${statusClass}" data-receipt-id="${r.id}" title="${statusTitle}"></span> ${formatDate(r.date)}</div>
                 <div class="receipt-card-row">
                   <span class="amount">${formatMoney(r.amount)}</span>
                   <span class="category-tag cat-${(r.category || 'Other').toLowerCase()}">${escapeHTML(r.category || 'Other')}</span>
@@ -492,7 +541,8 @@ const Jobs = (() => {
                   <button class="btn-icon btn-edit-receipt" data-id="${r.id}" title="Edit Receipt">&#9998;</button>
                   <button class="btn-icon btn-delete-receipt" data-id="${r.id}" title="Delete Receipt">&#128465;</button>
                 </div>
-              </div>`
+              </div>`;
+                }
               )
               .join('')}
           </div>
@@ -505,6 +555,20 @@ const Jobs = (() => {
       header.addEventListener('click', () => {
         const items = header.nextElementSibling;
         items.style.display = items.style.display === 'none' ? '' : 'none';
+      });
+    });
+
+    // Toggle submitted status on status dot click
+    receiptsEl.querySelectorAll('.status-dot').forEach((dot) => {
+      dot.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const receiptId = dot.getAttribute('data-receipt-id');
+        const receipt = await DB.get('receipts', receiptId);
+        if (receipt) {
+          receipt.submitted = !receipt.submitted;
+          await DB.put('receipts', receipt);
+          await renderDetail(jobId);
+        }
       });
     });
 
@@ -582,9 +646,11 @@ const GasLog = (() => {
       .map((r) => {
         const job = jobMap[r.jobId];
         const jobName = job ? escapeHTML(job.name) : 'Unknown Job';
+        const statusClass = r.submitted ? 'status-dot status-submitted' : 'status-dot';
+        const statusTitle = r.submitted ? 'Submitted' : 'Pending';
         return `
         <div class="receipt-card" data-id="${r.id}">
-          <div class="receipt-meta">${formatDate(r.date)} &middot; ${jobName}</div>
+          <div class="receipt-meta"><span class="${statusClass}" title="${statusTitle}"></span> ${formatDate(r.date)} &middot; ${jobName}</div>
           <div class="receipt-card-row">
             <span class="receipt-store">${escapeHTML(r.store)}</span>
             <span class="amount">${formatMoney(r.amount)}</span>
@@ -736,6 +802,7 @@ const AddReceipt = (() => {
         isGas,
         photo: photoData || null,
         created: existing ? existing.created : Date.now(),
+        submitted: existing ? !!existing.submitted : false,
       };
     } else {
       receipt = {
@@ -749,6 +816,7 @@ const AddReceipt = (() => {
         isGas,
         photo: photoData || null,
         created: Date.now(),
+        submitted: false,
       };
     }
 
@@ -784,7 +852,7 @@ const Export = (() => {
     const jobMap = {};
     jobs.forEach((j) => (jobMap[j.id] = j));
 
-    const header = 'Date,Job,Store,Category,Amount,Gas,Notes';
+    const header = 'Date,Job,Store,Category,Amount,Gas,Submitted,Notes';
     const rows = receipts
       .slice()
       .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
@@ -798,18 +866,44 @@ const Export = (() => {
           csvEscape(r.category || ''),
           (Number(r.amount) || 0).toFixed(2),
           r.isGas ? 'Yes' : 'No',
+          r.submitted ? 'Yes' : 'No',
           csvEscape(r.notes || ''),
         ].join(',');
       });
 
     const csv = [header, ...rows].join('\n');
+    downloadCSV(csv, `receiptlog-${new Date().toISOString().split('T')[0]}.csv`);
+  }
+
+  function jobToCSV(job, receipts) {
+    const header = 'Date,Store,Category,Amount,Gas,Submitted,Notes';
+    const rows = receipts
+      .slice()
+      .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
+      .map((r) => {
+        return [
+          r.date || '',
+          csvEscape(r.store || ''),
+          csvEscape(r.category || ''),
+          (Number(r.amount) || 0).toFixed(2),
+          r.isGas ? 'Yes' : 'No',
+          r.submitted ? 'Yes' : 'No',
+          csvEscape(r.notes || ''),
+        ].join(',');
+      });
+
+    const csv = [header, ...rows].join('\n');
+    const safeName = (job.name || 'job').replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+    const today = new Date().toISOString().split('T')[0];
+    downloadCSV(csv, `receiptlog-${safeName}-${today}.csv`);
+  }
+
+  function downloadCSV(csv, filename) {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-
-    const today = new Date().toISOString().split('T')[0];
     const a = document.createElement('a');
     a.href = url;
-    a.download = `receiptlog-${today}.csv`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -829,7 +923,7 @@ const Export = (() => {
     document.getElementById('btn-export').addEventListener('click', toCSV);
   }
 
-  return { init };
+  return { init, jobToCSV };
 })();
 
 

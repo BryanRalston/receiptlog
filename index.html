@@ -59,9 +59,9 @@
         <span class="stat-label">Active Jobs</span>
         <span class="stat-value" id="dashboard-job-count">0</span>
       </div>
-      <div class="stat-card" id="stat-receipt-count">
-        <span class="stat-label">Receipts</span>
-        <span class="stat-value" id="dashboard-receipt-count">0</span>
+      <div class="stat-card" id="stat-pending-count">
+        <span class="stat-label">Pending</span>
+        <span class="stat-value" id="dashboard-pending-count">0</span>
       </div>
       <div class="stat-card" id="stat-gas-total">
         <span class="stat-label">Gas Total</span>
@@ -70,6 +70,10 @@
     </div>
     <div class="section-header">
       <h2>Recent Receipts</h2>
+      <div class="filter-toggle" id="dashboard-filter">
+        <button data-filter="pending" class="active">Pending</button>
+        <button data-filter="all">All</button>
+      </div>
     </div>
     <div id="dashboard-recent" class="receipt-list">
       <!-- JS populates -->
