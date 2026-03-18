@@ -1330,11 +1330,11 @@ const Export = (() => {
 
 // ─── Demo Data ─────────────────────────────────────────────────────────────
 const DemoData = (() => {
-  const DEMO_JOB_ID = 'demo-kitchen-remodel';
+  const DEMO_JOB_ID = 'demo-store-remodel';
 
   async function seed() {
     const existing = await DB.get('jobs', DEMO_JOB_ID);
-    if (existing) return; // already seeded
+    if (existing) return;
 
     const today = new Date().toISOString().split('T')[0];
     const d1 = new Date(Date.now() - 345600000).toISOString().split('T')[0];
@@ -1344,19 +1344,19 @@ const DemoData = (() => {
 
     await DB.put('jobs', {
       id: DEMO_JOB_ID,
-      name: 'Kitchen Remodel',
-      client: 'Smith Family',
-      address: '742 Evergreen Terrace',
+      name: 'Store Remodel - Westfield',
+      client: 'Westfield Properties',
+      address: '1200 Commerce Blvd, Suite 4',
       status: 'active',
       created: Date.now() - 400000000,
     });
 
     const receipts = [
-      { id: 'demo-r1', jobId: DEMO_JOB_ID, store: 'Home Depot', amount: 487.32, date: d1, category: 'Materials', notes: 'Cabinet hardware, hinges, drawer slides', isGas: false, submitted: true, created: Date.now() - 345600000 },
-      { id: 'demo-r2', jobId: DEMO_JOB_ID, store: 'Home Depot', amount: 1243.00, date: d2, category: 'Materials', notes: 'Quartz countertop slab, undermount sink', isGas: false, submitted: true, created: Date.now() - 259200000 },
-      { id: 'demo-r3', jobId: DEMO_JOB_ID, store: 'Lowes', amount: 189.99, date: d3, category: 'Tools', notes: 'Tile saw blade, carbide bits, level', isGas: false, submitted: false, created: Date.now() - 172800000 },
-      { id: 'demo-r4', jobId: DEMO_JOB_ID, store: 'Shell', amount: 62.40, date: d4, category: 'Gas', notes: 'Fill up — countertop pickup run', isGas: true, submitted: false, created: Date.now() - 86400000 },
-      { id: 'demo-r5', jobId: DEMO_JOB_ID, store: 'Lowes', amount: 74.50, date: today, category: 'Materials', notes: 'Grout, tile spacers, thinset mortar', isGas: false, submitted: false, created: Date.now() },
+      { id: 'demo-r1', jobId: DEMO_JOB_ID, store: 'Home Depot', amount: 872.45, date: d1, category: 'Materials', notes: 'Drywall sheets, joint compound, corner bead, screws', isGas: false, submitted: true, created: Date.now() - 345600000 },
+      { id: 'demo-r2', jobId: DEMO_JOB_ID, store: 'Home Depot', amount: 1536.00, date: d2, category: 'Materials', notes: 'LVT flooring (24 boxes), adhesive, transition strips', isGas: false, submitted: true, created: Date.now() - 259200000 },
+      { id: 'demo-r3', jobId: DEMO_JOB_ID, store: 'Lowes', amount: 249.99, date: d3, category: 'Tools', notes: 'Oscillating multi-tool, blade set, dust shroud', isGas: false, submitted: false, created: Date.now() - 172800000 },
+      { id: 'demo-r4', jobId: DEMO_JOB_ID, store: 'Shell', amount: 68.50, date: d4, category: 'Gas', notes: 'Fill up — supply run to job site', isGas: true, submitted: false, created: Date.now() - 86400000 },
+      { id: 'demo-r5', jobId: DEMO_JOB_ID, store: 'Sherwin-Williams', amount: 312.80, date: today, category: 'Materials', notes: 'Interior paint (8 gal), primer, rollers, tape', isGas: false, submitted: false, created: Date.now() },
     ];
 
     for (const r of receipts) {
@@ -1383,10 +1383,10 @@ const Tutorial = (() => {
     { title: 'Welcome to ReceiptLog', text: 'Track every receipt, organize by job, and share reports with your team. We\'ve loaded a sample project so you can see everything in action.', highlight: null, navigate: 'dashboard' },
     { title: 'Your Dashboard', text: 'At a glance — total spend, active jobs, pending receipts, and gas costs. This is what it looks like with a real project loaded.', highlight: '.stats-grid', navigate: 'dashboard' },
     { title: 'Pending Filter', text: 'Toggle between Pending and All. Pending shows receipts you haven\'t submitted yet — so nothing falls through the cracks.', highlight: '#dashboard-filter', navigate: null },
-    { title: 'Recent Receipts', text: 'Your latest receipts with store, amount, category, and details. Orange dot = still pending. These are from the sample Kitchen Remodel.', highlight: '.receipt-list', navigate: null },
+    { title: 'Recent Receipts', text: 'Your latest receipts with store, amount, category, and details. Orange dot = still pending. These are from the sample Store Remodel project.', highlight: '.receipt-list', navigate: null },
     { title: 'Jobs', text: 'Tap Jobs to see your projects. Each job tracks its own receipts organized by store.', highlight: '#nav-jobs', navigate: 'jobs' },
     { title: 'Job Cards', text: 'Each card shows total spend and receipt count. Tap a card to drill into the details. Tap + New Job anytime to add more.', highlight: '.job-card', navigate: null },
-    { title: 'Inside a Job', text: 'Receipts grouped by store with subtotals. Tap a store header to collapse or expand it. This is the Kitchen Remodel breakdown.', highlight: '.receipt-groups', navigate: 'job-detail', navigateData: 'demo-kitchen-remodel' },
+    { title: 'Inside a Job', text: 'Receipts grouped by store with subtotals. Tap a store header to collapse or expand it. This is the Store Remodel breakdown.', highlight: '.receipt-groups', navigate: 'job-detail', navigateData: 'demo-store-remodel' },
     { title: 'Status Tracking', text: 'Orange dot = pending, green = submitted. Tap any dot to toggle. Hit Mark All Submitted when you\'ve turned in the batch.', highlight: '.receipt-card', navigate: null },
     { title: 'Share Report', text: 'Generates a professional report with summary, receipt table, and photos — all in one file. Share via email, text, or any app on your phone.', highlight: '.btn-share-report', navigate: null },
     { title: 'Add a Receipt', text: 'Select the job, enter the store and amount, pick a category, and list what you bought in the Details field.', highlight: '#nav-add', navigate: 'add' },
