@@ -1137,6 +1137,7 @@ small {
   display: flex;
   gap: 8px;
   margin-top: 12px;
+  flex-wrap: wrap;
 }
 
 /* === Danger Button (alias for delete styling) === */

@@ -452,7 +452,8 @@ const Jobs = (() => {
       </div>
       <div class="job-detail-actions">
         <button class="btn-secondary btn-sm btn-edit-detail-job" data-id="${job.id}">Edit Job</button>
-        <button class="btn-secondary btn-sm btn-export-job" data-id="${job.id}">Export Job</button>
+        <button class="btn-primary btn-sm btn-share-report">Share Report</button>
+        <button class="btn-secondary btn-sm btn-export-job" data-id="${job.id}">CSV</button>
         ${pendingCount > 0 ? `<button class="btn-mark-submitted btn-sm btn-mark-all-submitted" data-id="${job.id}">Mark All Submitted</button>` : ''}
         <button class="btn-danger btn-sm btn-delete-detail-job" data-id="${job.id}">Delete Job</button>
       </div>`;
@@ -462,7 +463,12 @@ const Jobs = (() => {
       await openJobModal(job.id);
     });
 
-    // Export Job button
+    // Share Report button
+    headerEl.querySelector('.btn-share-report').addEventListener('click', async () => {
+      await Export.shareReport(job, allReceipts, () => renderDetail(jobId));
+    });
+
+    // Export CSV button
     headerEl.querySelector('.btn-export-job').addEventListener('click', () => {
       Export.jobToCSV(job, allReceipts);
     });
@@ -982,8 +988,7 @@ const Export = (() => {
     downloadCSV(csv, `receiptlog-${safeName}-${today}.csv`);
   }
 
-  function downloadCSV(csv, filename) {
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  function downloadFile(blob, filename) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -992,6 +997,274 @@ const Export = (() => {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  }
+
+  function downloadCSV(csv, filename) {
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    downloadFile(blob, filename);
+  }
+
+  function generateReport(job, receipts) {
+    const sorted = receipts.slice().sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    const totalSpend = receipts.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+    const receiptCount = receipts.length;
+    const pendingCount = receipts.filter((r) => !r.submitted).length;
+    const gasTotal = receipts.filter((r) => r.isGas).reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+    const photosExist = receipts.some((r) => r.photo);
+
+    // Date range
+    const dates = sorted.map((r) => r.date).filter(Boolean);
+    const dateFrom = dates.length > 0 ? dates[0] : '';
+    const dateTo = dates.length > 0 ? dates[dates.length - 1] : '';
+    const now = new Date();
+    const generatedDate = now.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+    const generatedTimestamp = now.toLocaleString();
+
+    // Category breakdown
+    const catMap = {};
+    receipts.forEach((r) => {
+      const cat = r.category || 'Other';
+      if (!catMap[cat]) catMap[cat] = { total: 0, count: 0 };
+      catMap[cat].total += Number(r.amount) || 0;
+      catMap[cat].count += 1;
+    });
+    const categories = Object.keys(catMap).sort();
+
+    // Category color map (matches app CSS)
+    const catColors = {
+      Materials: { bg: '#DBEAFE', color: '#1E40AF' },
+      Tools: { bg: '#F3E8FF', color: '#6B21A8' },
+      Gas: { bg: '#FEF3C7', color: '#92400E' },
+      Permits: { bg: '#D1FAE5', color: '#065F46' },
+      Meals: { bg: '#FFE4E6', color: '#9F1239' },
+      Rental: { bg: '#E0E7FF', color: '#3730A3' },
+      Other: { bg: '#F0F2F7', color: '#475569' },
+    };
+
+    function getCatStyle(cat) {
+      const c = catColors[cat] || catColors.Other;
+      return `background:${c.bg};color:${c.color};padding:3px 10px;border-radius:50px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;display:inline-block;`;
+    }
+
+    function esc(str) {
+      if (!str) return '';
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function fmtDate(dateStr) {
+      if (!dateStr) return '';
+      const d = new Date(dateStr + 'T00:00:00');
+      return d.toLocaleDateString();
+    }
+
+    function fmtMoney(n) {
+      return '$' + (Number(n) || 0).toFixed(2);
+    }
+
+    // Build category breakdown rows
+    const catRows = categories.map((cat) => {
+      const data = catMap[cat];
+      return `<tr>
+        <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;"><span style="${getCatStyle(cat)}">${esc(cat)}</span></td>
+        <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;">${fmtMoney(data.total)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;text-align:center;color:#4B5563;">${data.count}</td>
+      </tr>`;
+    }).join('');
+
+    // Build receipt table rows
+    const receiptRows = sorted.map((r) => {
+      const statusColor = r.submitted ? '#10B981' : '#F59E0B';
+      const statusLabel = r.submitted ? 'Submitted' : 'Pending';
+      return `<tr>
+        <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;white-space:nowrap;">${fmtDate(r.date)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;font-weight:500;">${esc(r.store)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;"><span style="${getCatStyle(r.category || 'Other')}">${esc(r.category || 'Other')}</span></td>
+        <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;">${fmtMoney(r.amount)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;color:#4B5563;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.notes)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;white-space:nowrap;">
+          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor};margin-right:6px;vertical-align:middle;"></span>
+          <span style="color:${statusColor};font-weight:500;font-size:13px;">${statusLabel}</span>
+        </td>
+      </tr>`;
+    }).join('');
+
+    // Build photos section
+    let photosSection = '';
+    if (photosExist) {
+      const photoCards = sorted.filter((r) => r.photo).map((r) => {
+        return `<div style="break-inside:avoid;margin-bottom:16px;border:1px solid #E2E5F0;border-radius:12px;overflow:hidden;background:#fff;">
+          <img src="${r.photo}" alt="Receipt photo" style="width:100%;display:block;max-height:400px;object-fit:contain;background:#F7F8FC;">
+          <div style="padding:10px 14px;">
+            <div style="font-weight:600;font-size:14px;color:#111827;">${esc(r.store)} &mdash; ${fmtDate(r.date)}</div>
+            <div style="font-weight:700;font-size:16px;color:#6366F1;margin-top:2px;">${fmtMoney(r.amount)}</div>
+          </div>
+        </div>`;
+      }).join('');
+
+      photosSection = `
+      <div style="margin-top:32px;">
+        <h2 style="font-size:18px;font-weight:700;color:#111827;margin-bottom:16px;padding-bottom:8px;border-bottom:2px solid #6366F1;">Receipt Photos</h2>
+        <div style="column-count:2;column-gap:16px;">
+          ${photoCards}
+        </div>
+      </div>`;
+    }
+
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ReceiptLog Report - ${esc(job.name)}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #111827; background: #fff; }
+  table { border-collapse: collapse; width: 100%; }
+  @media print {
+    body { font-size: 12px; }
+    .page-break { page-break-before: always; }
+  }
+  @media (max-width: 600px) {
+    .summary-grid { flex-direction: column !important; }
+    .summary-card { min-width: 100% !important; }
+    table { font-size: 12px; }
+    td, th { padding: 6px 8px !important; }
+    .photos-grid { column-count: 1 !important; }
+  }
+</style>
+</head>
+<body style="padding:0;margin:0;">
+  <!-- Header -->
+  <div style="background:linear-gradient(135deg, #6366F1, #8B5CF6);padding:32px 24px;color:#fff;">
+    <div style="font-size:14px;font-weight:600;letter-spacing:1px;text-transform:uppercase;opacity:0.85;margin-bottom:8px;">ReceiptLog</div>
+    <h1 style="font-size:28px;font-weight:800;margin-bottom:8px;color:#fff;">${esc(job.name)}</h1>
+    ${job.client ? `<div style="font-size:15px;opacity:0.9;margin-bottom:4px;">${esc(job.client)}</div>` : ''}
+    ${job.address ? `<div style="font-size:14px;opacity:0.75;">${esc(job.address)}</div>` : ''}
+    <div style="margin-top:16px;font-size:13px;opacity:0.75;">
+      ${dateFrom && dateTo ? `${fmtDate(dateFrom)} &ndash; ${fmtDate(dateTo)} &nbsp;&bull;&nbsp; ` : ''}
+      Report generated ${esc(generatedDate)}
+    </div>
+  </div>
+
+  <div style="padding:24px;max-width:800px;margin:0 auto;">
+    <!-- Summary -->
+    <div style="margin-bottom:32px;">
+      <h2 style="font-size:18px;font-weight:700;color:#111827;margin-bottom:16px;padding-bottom:8px;border-bottom:2px solid #6366F1;">Summary</h2>
+      <div class="summary-grid" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px;">
+        <div class="summary-card" style="flex:1;min-width:140px;padding:16px;background:#F7F8FC;border-radius:12px;border-left:4px solid #6366F1;">
+          <div style="font-size:12px;font-weight:600;color:#4B5563;margin-bottom:4px;">Total Spend</div>
+          <div style="font-size:28px;font-weight:800;color:#111827;font-variant-numeric:tabular-nums;">${fmtMoney(totalSpend)}</div>
+        </div>
+        <div class="summary-card" style="flex:1;min-width:140px;padding:16px;background:#F7F8FC;border-radius:12px;border-left:4px solid #10B981;">
+          <div style="font-size:12px;font-weight:600;color:#4B5563;margin-bottom:4px;">Receipts</div>
+          <div style="font-size:28px;font-weight:800;color:#111827;">${receiptCount}</div>
+        </div>
+        ${gasTotal > 0 ? `<div class="summary-card" style="flex:1;min-width:140px;padding:16px;background:#F7F8FC;border-radius:12px;border-left:4px solid #06B6D4;">
+          <div style="font-size:12px;font-weight:600;color:#4B5563;margin-bottom:4px;">Gas Total</div>
+          <div style="font-size:28px;font-weight:800;color:#111827;font-variant-numeric:tabular-nums;">${fmtMoney(gasTotal)}</div>
+        </div>` : ''}
+      </div>
+
+      <!-- Category Breakdown -->
+      <table style="margin-bottom:8px;">
+        <thead>
+          <tr style="background:#F7F8FC;">
+            <th style="padding:10px 12px;text-align:left;font-size:12px;font-weight:600;color:#4B5563;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #E2E5F0;">Category</th>
+            <th style="padding:10px 12px;text-align:right;font-size:12px;font-weight:600;color:#4B5563;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #E2E5F0;">Amount</th>
+            <th style="padding:10px 12px;text-align:center;font-size:12px;font-weight:600;color:#4B5563;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #E2E5F0;">Count</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${catRows}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Receipt Table -->
+    <div style="margin-bottom:32px;">
+      <h2 style="font-size:18px;font-weight:700;color:#111827;margin-bottom:16px;padding-bottom:8px;border-bottom:2px solid #6366F1;">All Receipts</h2>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr style="background:#F7F8FC;">
+              <th style="padding:10px 12px;text-align:left;font-size:12px;font-weight:600;color:#4B5563;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #E2E5F0;">Date</th>
+              <th style="padding:10px 12px;text-align:left;font-size:12px;font-weight:600;color:#4B5563;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #E2E5F0;">Store</th>
+              <th style="padding:10px 12px;text-align:left;font-size:12px;font-weight:600;color:#4B5563;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #E2E5F0;">Category</th>
+              <th style="padding:10px 12px;text-align:right;font-size:12px;font-weight:600;color:#4B5563;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #E2E5F0;">Amount</th>
+              <th style="padding:10px 12px;text-align:left;font-size:12px;font-weight:600;color:#4B5563;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #E2E5F0;">Details</th>
+              <th style="padding:10px 12px;text-align:left;font-size:12px;font-weight:600;color:#4B5563;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #E2E5F0;">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${receiptRows}
+            <tr style="background:#F7F8FC;font-weight:700;">
+              <td style="padding:10px 12px;border-top:2px solid #6366F1;" colspan="3">Total</td>
+              <td style="padding:10px 12px;border-top:2px solid #6366F1;text-align:right;font-variant-numeric:tabular-nums;color:#6366F1;font-size:16px;">${fmtMoney(totalSpend)}</td>
+              <td style="padding:10px 12px;border-top:2px solid #6366F1;" colspan="2">${receiptCount} receipt${receiptCount !== 1 ? 's' : ''} &bull; ${pendingCount} pending</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Photos -->
+    ${photosExist ? `<div class="page-break"></div>` : ''}
+    <div class="photos-grid">${photosSection}</div>
+
+    <!-- Footer -->
+    <div style="margin-top:40px;padding-top:16px;border-top:1px solid #E2E5F0;text-align:center;">
+      <div style="font-size:12px;color:#9CA3AF;">Generated by ReceiptLog &bull; ${esc(generatedTimestamp)}</div>
+    </div>
+  </div>
+</body>
+</html>`;
+
+    return new Blob([html], { type: 'text/html' });
+  }
+
+  async function shareReport(job, receipts, onShared) {
+    const blob = generateReport(job, receipts);
+    const safeName = (job.name || 'job').replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+    const today = new Date().toISOString().split('T')[0];
+    const filename = `receiptlog-${safeName}-${today}.html`;
+    const totalSpend = receipts.reduce((sum, r) => sum + (Number(r.amount) || 0), 0);
+
+    const file = new File([blob], filename, { type: 'text/html' });
+    const shareTitle = `ReceiptLog: ${job.name}`;
+    const shareText = `${job.name} — ${receipts.length} receipts, ${formatMoney(totalSpend)} total`;
+
+    let shared = false;
+
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({
+          title: shareTitle,
+          text: shareText,
+          files: [file],
+        });
+        shared = true;
+      } catch (err) {
+        // User cancelled or share failed — fall through to download
+        if (err.name !== 'AbortError') {
+          downloadFile(blob, filename);
+        }
+        return;
+      }
+    } else {
+      downloadFile(blob, filename);
+      return;
+    }
+
+    // If shared successfully, mark pending receipts as submitted
+    if (shared) {
+      for (const r of receipts) {
+        if (!r.submitted) {
+          r.submitted = true;
+          await DB.put('receipts', r);
+        }
+      }
+      if (onShared) onShared();
+    }
   }
 
   function csvEscape(str) {
@@ -1007,7 +1280,7 @@ const Export = (() => {
     document.getElementById('btn-export').addEventListener('click', toCSV);
   }
 
-  return { init, jobToCSV };
+  return { init, jobToCSV, shareReport };
 })();
 
 
