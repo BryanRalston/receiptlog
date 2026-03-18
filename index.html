@@ -40,6 +40,12 @@
   <header class="header-bar" id="header-bar">
     <h1 class="header-title">ReceiptLog</h1>
     <div class="header-actions">
+      <button id="btn-data" class="btn-icon" title="Backup & Restore" aria-label="Backup & Restore">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
       <button id="btn-tutorial" class="btn-icon" title="Tutorial" aria-label="Tutorial">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"/>
@@ -247,6 +253,41 @@
         </div>
         <button type="submit" class="btn-primary btn-block">Save Job</button>
       </form>
+    </div>
+  </div>
+
+  <!-- Data Management Modal -->
+  <div id="data-modal-overlay" class="modal-overlay" style="display:none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Backup & Restore</h3>
+        <button id="data-modal-close" class="btn-close">✕</button>
+      </div>
+      <div class="data-modal-body">
+        <p class="data-modal-desc">Move your data between devices or keep a safe backup.</p>
+
+        <div class="data-action">
+          <h4>Backup</h4>
+          <p>Export all your jobs and receipts as a single file. Share it or save it.</p>
+          <div class="data-action-buttons">
+            <button id="btn-backup-share" class="btn-primary btn-sm btn-block">Share Backup</button>
+            <button id="btn-backup-download" class="btn-secondary btn-sm btn-block">Download File</button>
+          </div>
+        </div>
+
+        <div class="data-action">
+          <h4>Restore</h4>
+          <p>Import a backup file from another device. This adds to your existing data.</p>
+          <button id="btn-restore" class="btn-secondary btn-sm btn-block">Import Backup</button>
+          <input type="file" id="restore-file-input" accept=".json" style="display:none;">
+        </div>
+
+        <div class="data-action data-action-danger">
+          <h4>Clear All Data</h4>
+          <p>Permanently delete all jobs and receipts from this device.</p>
+          <button id="btn-clear-data" class="btn-danger btn-sm btn-block">Clear Everything</button>
+        </div>
+      </div>
     </div>
   </div>
 

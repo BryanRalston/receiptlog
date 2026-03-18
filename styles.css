@@ -1293,6 +1293,50 @@ small {
   gap: 0;
 }
 
+/* === Data Management Modal === */
+.data-modal-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.data-modal-desc {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.data-action {
+  padding: 16px;
+  background: var(--bg-gray);
+  border-radius: var(--radius-sm);
+}
+
+.data-action h4 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+}
+
+.data-action p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  line-height: 1.4;
+}
+
+.data-action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.data-action-danger {
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  background: rgba(239, 68, 68, 0.04);
+}
+
 /* === Tutorial === */
 .tutorial-overlay {
   position: fixed;

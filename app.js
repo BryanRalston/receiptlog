@@ -544,6 +544,7 @@ const Jobs = (() => {
                 ${r.notes ? `<div class="receipt-notes">${escapeHTML(r.notes)}</div>` : ''}
                 ${r.photo ? `<img class="photo-thumb" src="${r.photo}" alt="Receipt photo">` : ''}
                 <div class="receipt-card-actions">
+                  ${r.photo ? `<button class="btn-icon btn-share-photo" data-id="${r.id}" title="Share Photo">&#x1F4E4;</button>` : ''}
                   <button class="btn-icon btn-edit-receipt" data-id="${r.id}" title="Edit Receipt">&#9998;</button>
                   <button class="btn-icon btn-delete-receipt" data-id="${r.id}" title="Delete Receipt">&#128465;</button>
                 </div>
@@ -579,6 +580,16 @@ const Jobs = (() => {
     });
 
     // Edit receipt — populate form and navigate to add view
+    // Share individual receipt photo
+    receiptsEl.querySelectorAll('.btn-share-photo').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-id');
+        const receipt = await DB.get('receipts', id);
+        if (receipt) await sharePhoto(receipt);
+      });
+    });
+
     receiptsEl.querySelectorAll('.btn-edit-receipt').forEach((btn) => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -1328,6 +1339,163 @@ const Export = (() => {
 })();
 
 
+// ─── Data Manager Module ───────────────────────────────────────────────────
+const DataManager = (() => {
+  async function exportBackup() {
+    const [jobs, receipts] = await Promise.all([
+      DB.getAll('jobs'),
+      DB.getAll('receipts'),
+    ]);
+    const backup = {
+      version: 1,
+      app: 'ReceiptLog',
+      exportedAt: new Date().toISOString(),
+      jobs,
+      receipts,
+    };
+    return new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+  }
+
+  async function shareBackup() {
+    const blob = await exportBackup();
+    const today = new Date().toISOString().split('T')[0];
+    const file = new File([blob], `receiptlog-backup-${today}.json`, { type: 'application/json' });
+
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ title: 'ReceiptLog Backup', text: 'ReceiptLog data backup', files: [file] });
+        return;
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+      }
+    }
+    // Fallback: download
+    downloadBackup();
+  }
+
+  async function downloadBackup() {
+    const blob = await exportBackup();
+    const today = new Date().toISOString().split('T')[0];
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `receiptlog-backup-${today}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  async function importBackup(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        try {
+          const backup = JSON.parse(e.target.result);
+          if (backup.app !== 'ReceiptLog' || !backup.jobs || !backup.receipts) {
+            alert('Invalid backup file.');
+            reject(new Error('Invalid backup'));
+            return;
+          }
+          let jobCount = 0, receiptCount = 0;
+          for (const job of backup.jobs) {
+            await DB.put('jobs', job);
+            jobCount++;
+          }
+          for (const receipt of backup.receipts) {
+            await DB.put('receipts', receipt);
+            receiptCount++;
+          }
+          alert(`Imported ${jobCount} jobs and ${receiptCount} receipts.`);
+          Dashboard.render();
+          resolve();
+        } catch (err) {
+          alert('Could not read backup file.');
+          reject(err);
+        }
+      };
+      reader.readAsText(file);
+    });
+  }
+
+  async function clearAll() {
+    if (!confirm('Delete ALL jobs and receipts? This cannot be undone.')) return;
+    if (!confirm('Are you sure? Everything will be permanently erased.')) return;
+    const [jobs, receipts] = await Promise.all([
+      DB.getAll('jobs'),
+      DB.getAll('receipts'),
+    ]);
+    for (const r of receipts) await DB.remove('receipts', r.id);
+    for (const j of jobs) await DB.remove('jobs', j.id);
+    alert('All data cleared.');
+    Dashboard.render();
+  }
+
+  function init() {
+    const modalOverlay = document.getElementById('data-modal-overlay');
+    document.getElementById('btn-data').addEventListener('click', () => {
+      modalOverlay.style.display = '';
+    });
+    document.getElementById('data-modal-close').addEventListener('click', () => {
+      modalOverlay.style.display = 'none';
+    });
+    modalOverlay.addEventListener('click', (e) => {
+      if (e.target === modalOverlay) modalOverlay.style.display = 'none';
+    });
+    document.getElementById('btn-backup-share').addEventListener('click', shareBackup);
+    document.getElementById('btn-backup-download').addEventListener('click', downloadBackup);
+    document.getElementById('btn-restore').addEventListener('click', () => {
+      document.getElementById('restore-file-input').click();
+    });
+    document.getElementById('restore-file-input').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        await importBackup(file);
+        modalOverlay.style.display = 'none';
+      }
+      e.target.value = '';
+    });
+    document.getElementById('btn-clear-data').addEventListener('click', async () => {
+      await clearAll();
+      modalOverlay.style.display = 'none';
+    });
+  }
+
+  return { init };
+})();
+
+
+// ─── Photo Share Helper ────────────────────────────────────────────────────
+async function sharePhoto(receipt) {
+  if (!receipt.photo) return;
+
+  // Convert base64 data URL to blob
+  const res = await fetch(receipt.photo);
+  const blob = await res.blob();
+  const ext = blob.type.includes('png') ? 'png' : 'jpg';
+  const filename = `receipt-${receipt.store}-${receipt.date}.${ext}`.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const file = new File([blob], filename, { type: blob.type });
+
+  if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({
+        title: `Receipt: ${receipt.store}`,
+        text: `${receipt.store} — ${formatMoney(receipt.amount)} on ${receipt.date}${receipt.notes ? '\n' + receipt.notes : ''}`,
+        files: [file],
+      });
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        // Fallback: open in new tab
+        window.open(receipt.photo, '_blank');
+      }
+    }
+  } else {
+    // Fallback: open in new tab
+    window.open(receipt.photo, '_blank');
+  }
+}
+
+
 // ─── Demo Data ─────────────────────────────────────────────────────────────
 const DemoData = (() => {
   const DEMO_JOB_ID = 'demo-store-remodel';
@@ -1525,6 +1693,7 @@ const Tutorial = (() => {
   Router.init();
   AddReceipt.init();
   Export.init();
+  DataManager.init();
   Tutorial.init();
 
   // Wire up "Add Gas" button in Gas Log view
