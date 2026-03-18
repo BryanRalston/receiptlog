@@ -1,10 +1,10 @@
 const CACHE_NAME = 'receiptlog-v1';
 const ASSETS = [
-  '/receiptlog/',
-  '/receiptlog/index.html',
-  '/receiptlog/app.js',
-  '/receiptlog/styles.css',
-  '/receiptlog/manifest.json'
+  './',
+  './index.html',
+  './app.js',
+  './styles.css',
+  './manifest.json'
 ];
 
 self.addEventListener('install', e => {
