@@ -420,7 +420,16 @@ const Jobs = (() => {
     }
 
     await DB.remove('jobs', jobId);
+
+    // Verify deletion succeeded before re-rendering
+    const check = await DB.get('jobs', jobId);
+    if (check) {
+      // Retry once
+      await DB.remove('jobs', jobId);
+    }
+
     await renderList();
+    Dashboard.render();
   }
 
   async function renderDetail(jobId) {
