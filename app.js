@@ -1234,11 +1234,11 @@ const CameraScanner = (() => {
     ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
     const dataURL = canvas.toDataURL('image/jpeg', 0.92);
 
+    // Grab resolve before close() clears it
+    const resolve = resolveCapture;
+    resolveCapture = null;
     close();
-    if (resolveCapture) {
-      resolveCapture(dataURL);
-      resolveCapture = null;
-    }
+    if (resolve) resolve(dataURL);
   }
 
   function close() {
