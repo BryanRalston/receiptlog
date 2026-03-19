@@ -464,6 +464,7 @@ const Jobs = (() => {
       <div class="job-detail-actions">
         <button class="btn-secondary btn-sm btn-edit-detail-job" data-id="${job.id}">Edit Job</button>
         <button class="btn-primary btn-sm btn-share-report">Share Report</button>
+        <button class="btn-secondary btn-sm btn-pdf-report">PDF Report</button>
         <button class="btn-secondary btn-sm btn-export-job" data-id="${job.id}">CSV</button>
         ${pendingCount > 0 ? `<button class="btn-mark-submitted btn-sm btn-mark-all-submitted" data-id="${job.id}">Mark All Submitted</button>` : ''}
         <button class="btn-danger btn-sm btn-delete-detail-job" data-id="${job.id}">Delete Job</button>
@@ -477,6 +478,42 @@ const Jobs = (() => {
     // Share Report button
     headerEl.querySelector('.btn-share-report').addEventListener('click', async () => {
       await Export.shareReport(job, allReceipts, () => renderDetail(jobId));
+    });
+
+    // PDF Report button
+    headerEl.querySelector('.btn-pdf-report').addEventListener('click', async () => {
+      const pdfBtn = headerEl.querySelector('.btn-pdf-report');
+      const origText = pdfBtn.textContent;
+      pdfBtn.textContent = 'Generating...';
+      pdfBtn.disabled = true;
+      try {
+        const doc = await PDFExport.generateJobReport(job, allReceipts);
+        const safeName = (job.name || 'job').replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+        const today = new Date().toISOString().split('T')[0];
+        const filename = `receiptlog-${safeName}-${today}.pdf`;
+
+        // Try Web Share API first (mobile), fall back to download
+        let shared = false;
+        const pdfBlob = doc.output('blob');
+        const pdfFile = new File([pdfBlob], filename, { type: 'application/pdf' });
+        if (navigator.share && navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+          try {
+            await navigator.share({ title: `ReceiptLog: ${job.name}`, files: [pdfFile] });
+            shared = true;
+          } catch (err) {
+            if (err.name === 'AbortError') { shared = true; } // user cancelled, don't fall back
+          }
+        }
+        if (!shared) {
+          doc.save(filename);
+        }
+      } catch (err) {
+        console.error('PDF generation failed:', err);
+        alert('Could not generate PDF. Please try again.');
+      } finally {
+        pdfBtn.textContent = origText;
+        pdfBtn.disabled = false;
+      }
     });
 
     // Export CSV button
@@ -796,10 +833,37 @@ const AddReceipt = (() => {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = (ev) => {
+      reader.onload = async (ev) => {
         photoData = ev.target.result;
         document.getElementById('photo-preview-img').src = photoData;
         document.getElementById('photo-preview').style.display = '';
+
+        // OCR scanning
+        showOCRStatus('scanning');
+        try {
+          const { text, confidence } = await OCR.recognize(photoData);
+          const parsed = OCR.parseReceipt(text);
+
+          const storeEl = document.getElementById('field-store');
+          const amountEl = document.getElementById('field-amount');
+          const dateEl = document.getElementById('field-date');
+          const categoryEl = document.getElementById('field-category');
+          const gasEl = document.getElementById('field-gas');
+          const today = new Date().toISOString().split('T')[0];
+
+          if (parsed.store && !storeEl.value) storeEl.value = parsed.store;
+          if (parsed.amount && !amountEl.value) amountEl.value = parsed.amount;
+          if (parsed.date && dateEl.value === today) dateEl.value = parsed.date;
+          if (parsed.category) {
+            categoryEl.value = parsed.category;
+            if (parsed.category === 'Gas') gasEl.checked = true;
+          }
+
+          showOCRStatus('done', confidence);
+        } catch (err) {
+          console.warn('OCR failed:', err);
+          showOCRStatus('error');
+        }
       };
       reader.readAsDataURL(file);
     });
@@ -951,6 +1015,184 @@ const AddReceipt = (() => {
 
   return { init, populateForm };
 })();
+
+
+// ─── OCR Module ─────────────────────────────────────────────────────────────
+const OCR = (() => {
+  let worker = null;
+  let destroyTimer = null;
+
+  async function getWorker() {
+    if (destroyTimer) { clearTimeout(destroyTimer); destroyTimer = null; }
+    if (!worker) {
+      worker = await Tesseract.createWorker('eng', 1, {
+        workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+        corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-simd-lstm.wasm.js',
+      });
+    }
+    // Auto-destroy after 60s idle
+    destroyTimer = setTimeout(destroy, 60000);
+    return worker;
+  }
+
+  function prepareImage(dataURL, maxWidth = 1500) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        if (img.width <= maxWidth) { resolve(dataURL); return; }
+        const canvas = document.createElement('canvas');
+        const scale = maxWidth / img.width;
+        canvas.width = maxWidth;
+        canvas.height = img.height * scale;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = dataURL;
+    });
+  }
+
+  async function recognize(imageDataURL) {
+    const prepared = await prepareImage(imageDataURL);
+    const w = await getWorker();
+    const { data } = await w.recognize(prepared);
+    return { text: data.text, confidence: data.confidence / 100 };
+  }
+
+  function parseReceipt(text) {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const result = { store: null, amount: null, date: null, category: null };
+
+    // --- Amount: look for TOTAL line, take last match ---
+    const totalRe = /(?:TOTAL|GRAND\s*TOTAL|AMOUNT\s*DUE|BALANCE\s*DUE|AMT\s*DUE)\s*[:$]?\s*\$?\s*(\d+[.,]\d{2})/gi;
+    let totalMatch, lastTotal = null;
+    while ((totalMatch = totalRe.exec(text)) !== null) {
+      lastTotal = totalMatch[1].replace(',', '.');
+    }
+    if (lastTotal) {
+      result.amount = parseFloat(lastTotal).toFixed(2);
+    } else {
+      // Fallback: largest dollar amount on receipt
+      const amountRe = /\$?\s*(\d{1,6}\.\d{2})/g;
+      let amtMatch, largest = 0;
+      while ((amtMatch = amountRe.exec(text)) !== null) {
+        const v = parseFloat(amtMatch[1]);
+        if (v > largest && v < 100000) largest = v;
+      }
+      if (largest > 0) result.amount = largest.toFixed(2);
+    }
+
+    // --- Date ---
+    const dateRe1 = /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/;
+    const dateRe2 = /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{1,2}),?\s*(\d{4})/i;
+    const months = { jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12 };
+    let dm = text.match(dateRe1);
+    if (dm) {
+      let [, m, d, y] = dm;
+      if (y.length === 2) y = '20' + y;
+      m = m.padStart(2, '0');
+      d = d.padStart(2, '0');
+      result.date = `${y}-${m}-${d}`;
+    } else {
+      dm = text.match(dateRe2);
+      if (dm) {
+        const mo = months[dm[1].toLowerCase().slice(0, 3)];
+        result.date = `${dm[3]}-${String(mo).padStart(2,'0')}-${dm[2].padStart(2,'0')}`;
+      }
+    }
+
+    // --- Store name ---
+    const knownStores = [
+      { re: /HOME\s*DEPOT/i, name: 'Home Depot', cat: 'Materials' },
+      { re: /LOWE'?S/i, name: "Lowe's", cat: 'Materials' },
+      { re: /MENARD'?S/i, name: "Menard's", cat: 'Materials' },
+      { re: /ACE\s*HARDWARE/i, name: 'Ace Hardware', cat: 'Materials' },
+      { re: /HARBOR\s*FREIGHT/i, name: 'Harbor Freight', cat: 'Tools' },
+      { re: /SHERWIN[\s-]*WILLIAMS/i, name: 'Sherwin-Williams', cat: 'Materials' },
+      { re: /WALMART/i, name: 'Walmart', cat: 'Materials' },
+      { re: /TARGET/i, name: 'Target', cat: 'Materials' },
+      { re: /COSTCO/i, name: 'Costco', cat: 'Materials' },
+      { re: /SHELL/i, name: 'Shell', cat: 'Gas' },
+      { re: /EXXON/i, name: 'Exxon', cat: 'Gas' },
+      { re: /CHEVRON/i, name: 'Chevron', cat: 'Gas' },
+      { re: /SPEEDWAY/i, name: 'Speedway', cat: 'Gas' },
+      { re: /MARATHON/i, name: 'Marathon', cat: 'Gas' },
+      { re: /BP\b/i, name: 'BP', cat: 'Gas' },
+      { re: /WAWA/i, name: 'Wawa', cat: 'Gas' },
+      { re: /QT\b|QUIK\s*TRIP/i, name: 'QuikTrip', cat: 'Gas' },
+      { re: /CASEY'?S/i, name: "Casey's", cat: 'Gas' },
+      { re: /SUNOCO/i, name: 'Sunoco', cat: 'Gas' },
+      { re: /VALERO/i, name: 'Valero', cat: 'Gas' },
+      { re: /7[\s-]*ELEVEN|7[\s-]*11/i, name: '7-Eleven', cat: 'Gas' },
+    ];
+
+    for (const s of knownStores) {
+      if (s.re.test(text)) {
+        result.store = s.name;
+        result.category = s.cat;
+        break;
+      }
+    }
+
+    if (!result.store) {
+      // Use first non-trivial line (store name is typically at the top)
+      for (let i = 0; i < Math.min(5, lines.length); i++) {
+        const line = lines[i];
+        if (line.length >= 3 && line.length <= 40 && /[a-zA-Z]{2,}/.test(line) && !/^\d{3}[\s-]?\d{3}/.test(line) && !/^\d+\s+(N|S|E|W|North|South)/.test(line)) {
+          result.store = line;
+          break;
+        }
+      }
+    }
+
+    // Category default for contractors
+    if (!result.category) result.category = 'Materials';
+
+    return result;
+  }
+
+  function destroy() {
+    if (worker) { worker.terminate(); worker = null; }
+    if (destroyTimer) { clearTimeout(destroyTimer); destroyTimer = null; }
+  }
+
+  return { recognize, parseReceipt, destroy };
+})();
+
+function showOCRStatus(state, confidence) {
+  const el = document.getElementById('ocr-status');
+  const icon = document.getElementById('ocr-status-icon');
+  const text = document.getElementById('ocr-status-text');
+  if (!el) return;
+
+  el.style.display = '';
+  el.className = 'ocr-status';
+
+  if (state === 'scanning') {
+    icon.className = 'ocr-spinner';
+    icon.textContent = '';
+    text.textContent = 'Scanning receipt...';
+  } else if (state === 'done') {
+    el.classList.add('ocr-done');
+    icon.className = '';
+    icon.textContent = '\u2713';
+    const confPct = Math.round((confidence || 0) * 100);
+    text.textContent = confPct >= 60
+      ? 'Fields auto-filled \u2014 review and save'
+      : 'Low confidence scan \u2014 please check all fields';
+  } else if (state === 'error') {
+    el.classList.add('ocr-error');
+    icon.className = '';
+    icon.textContent = '!';
+    text.textContent = 'Could not read receipt \u2014 enter manually';
+  }
+
+  if (state !== 'scanning') {
+    setTimeout(() => { el.style.display = 'none'; }, 5000);
+  }
+}
 
 
 // ─── Export Module ──────────────────────────────────────────────────────────
@@ -1347,6 +1589,190 @@ const Export = (() => {
   }
 
   return { init, jobToCSV, shareReport };
+})();
+
+
+// ─── PDF Export Module ──────────────────────────────────────────────────────
+const PDFExport = (() => {
+  async function generateJobReport(job, receipts) {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF('p', 'pt', 'letter');
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const margin = 40;
+    const contentW = pageW - margin * 2;
+
+    const sorted = receipts.slice().sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    const totalSpend = receipts.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+    const gasTotal = receipts.filter(r => r.isGas).reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+    const pendingCount = receipts.filter(r => !r.submitted).length;
+
+    // === HEADER BAND ===
+    doc.setFillColor(99, 102, 241);
+    doc.rect(0, 0, pageW, 85, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    doc.text('RECEIPTLOG', margin, 28);
+    doc.setFontSize(20);
+    doc.setFont(undefined, 'bold');
+    doc.text(job.name || 'Untitled Job', margin, 52);
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    const subtitle = [job.client, job.address].filter(Boolean).join(' \u2014 ');
+    if (subtitle) doc.text(subtitle, margin, 70);
+
+    // Date range on right
+    if (sorted.length) {
+      const first = sorted[0].date || '';
+      const last = sorted[sorted.length - 1].date || '';
+      doc.text(`${first} \u2014 ${last}`, pageW - margin, 52, { align: 'right' });
+    }
+
+    // === SUMMARY CARDS ===
+    let y = 105;
+    const cardW = (contentW - 24) / 4;
+    const cards = [
+      { label: 'Total Spend', value: formatMoney(totalSpend) },
+      { label: 'Receipts', value: String(receipts.length) },
+      { label: 'Gas Total', value: formatMoney(gasTotal) },
+      { label: 'Pending', value: String(pendingCount) },
+    ];
+    cards.forEach((c, i) => {
+      const cx = margin + i * (cardW + 8);
+      doc.setFillColor(247, 248, 252);
+      doc.roundedRect(cx, y, cardW, 50, 6, 6, 'F');
+      doc.setFontSize(9);
+      doc.setTextColor(107, 114, 128);
+      doc.setFont(undefined, 'normal');
+      doc.text(c.label, cx + 10, y + 18);
+      doc.setFontSize(16);
+      doc.setTextColor(17, 24, 39);
+      doc.setFont(undefined, 'bold');
+      doc.text(c.value, cx + 10, y + 38);
+    });
+    y += 70;
+
+    // === CATEGORY BREAKDOWN ===
+    const cats = {};
+    receipts.forEach(r => {
+      const cat = r.category || 'Other';
+      if (!cats[cat]) cats[cat] = { total: 0, count: 0 };
+      cats[cat].total += parseFloat(r.amount) || 0;
+      cats[cat].count++;
+    });
+    const catRows = Object.entries(cats).sort((a, b) => b[1].total - a[1].total);
+
+    doc.setFontSize(12);
+    doc.setTextColor(17, 24, 39);
+    doc.setFont(undefined, 'bold');
+    doc.text('Category Breakdown', margin, y);
+    y += 8;
+
+    doc.autoTable({
+      startY: y,
+      head: [['Category', 'Count', 'Amount']],
+      body: catRows.map(([cat, d]) => [cat, String(d.count), formatMoney(d.total)]),
+      foot: [['Total', String(receipts.length), formatMoney(totalSpend)]],
+      margin: { left: margin, right: margin },
+      styles: { fontSize: 9, cellPadding: 6 },
+      headStyles: { fillColor: [99, 102, 241], textColor: 255 },
+      footStyles: { fillColor: [238, 242, 255], textColor: [99, 102, 241], fontStyle: 'bold' },
+      columnStyles: { 2: { halign: 'right' } },
+    });
+
+    // === RECEIPT TABLE ===
+    doc.addPage();
+    doc.setFontSize(14);
+    doc.setTextColor(17, 24, 39);
+    doc.setFont(undefined, 'bold');
+    doc.text('All Receipts', margin, 40);
+
+    doc.autoTable({
+      startY: 52,
+      head: [['Date', 'Store', 'Category', 'Amount', 'Details', 'Status']],
+      body: sorted.map(r => [
+        r.date || '',
+        r.store || '',
+        r.category || 'Other',
+        formatMoney(parseFloat(r.amount) || 0),
+        r.notes || r.details || '',
+        r.submitted ? 'Submitted' : 'Pending'
+      ]),
+      foot: [['', '', 'TOTAL', formatMoney(totalSpend), '', '']],
+      margin: { left: margin, right: margin },
+      styles: { fontSize: 8, cellPadding: 5 },
+      headStyles: { fillColor: [99, 102, 241], textColor: 255 },
+      footStyles: { fillColor: [238, 242, 255], textColor: [99, 102, 241], fontStyle: 'bold' },
+      columnStyles: {
+        0: { cellWidth: 65 },
+        3: { halign: 'right', fontStyle: 'bold' },
+        4: { cellWidth: 140 },
+        5: { cellWidth: 55 },
+      },
+    });
+
+    // === RECEIPT PHOTOS ===
+    const withPhotos = sorted.filter(r => r.photo);
+    if (withPhotos.length > 0) {
+      doc.addPage();
+      doc.setFontSize(14);
+      doc.setTextColor(17, 24, 39);
+      doc.setFont(undefined, 'bold');
+      doc.text('Receipt Photos', margin, 40);
+
+      let photoY = 60;
+      let col = 0;
+      const colW = (contentW - 16) / 2;
+
+      for (const r of withPhotos) {
+        try {
+          const imgProps = doc.getImageProperties(r.photo);
+          const imgH = Math.min((imgProps.height / imgProps.width) * colW, 250);
+
+          if (photoY + imgH + 30 > pageH - margin) {
+            doc.addPage();
+            photoY = 40;
+            col = 0;
+          }
+
+          const px = col === 0 ? margin : margin + colW + 16;
+          doc.addImage(r.photo, 'JPEG', px, photoY, colW, imgH);
+          doc.setFontSize(8);
+          doc.setTextColor(107, 114, 128);
+          doc.setFont(undefined, 'normal');
+          doc.text(
+            `${r.store || 'Unknown'} \u2014 ${r.date || ''} \u2014 ${formatMoney(parseFloat(r.amount) || 0)}`,
+            px, photoY + imgH + 12
+          );
+
+          if (col === 0) {
+            col = 1;
+          } else {
+            col = 0;
+            photoY += imgH + 30;
+          }
+        } catch (e) {
+          console.warn('Failed to add receipt photo to PDF:', e);
+        }
+      }
+    }
+
+    // === PAGE FOOTERS ===
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.setTextColor(156, 163, 175);
+      doc.setFont(undefined, 'normal');
+      doc.text(`Generated by ReceiptLog \u2014 ${new Date().toLocaleString()}`, margin, pageH - 20);
+      doc.text(`Page ${i} of ${pageCount}`, pageW - margin, pageH - 20, { align: 'right' });
+    }
+
+    return doc;
+  }
+
+  return { generateJobReport };
 })();
 
 

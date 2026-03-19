@@ -211,6 +211,12 @@
             <img id="photo-preview-img" src="" alt="Receipt photo">
             <button type="button" id="photo-remove" class="btn-remove-photo">✕</button>
           </div>
+          <div id="ocr-status" class="ocr-status" style="display:none;">
+            <div class="ocr-status-inner">
+              <span id="ocr-status-icon" class="ocr-spinner"></span>
+              <span id="ocr-status-text">Scanning receipt...</span>
+            </div>
+          </div>
         </div>
       </div>
       <button type="submit" class="btn-primary btn-block">Save Receipt</button>
@@ -337,6 +343,9 @@
 
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3/dist/jspdf.plugin.autotable.min.js"></script>
 <script src="app.js" defer></script>
 </body>
 </html>

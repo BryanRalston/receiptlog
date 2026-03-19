@@ -1440,3 +1440,51 @@ small {
   background: var(--border);
   color: var(--text-primary);
 }
+
+/* === OCR Status === */
+.ocr-status {
+  padding: 10px 14px;
+  border-radius: var(--radius-sm, 8px);
+  background: #EEF2FF;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  margin-top: 8px;
+}
+
+.ocr-status-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #6366F1;
+}
+
+.ocr-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #E0E7FF;
+  border-top-color: #6366F1;
+  border-radius: 50%;
+  animation: ocr-spin 0.8s linear infinite;
+}
+
+@keyframes ocr-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ocr-status.ocr-done {
+  background: #D1FAE5;
+  border-color: rgba(16, 185, 129, 0.2);
+}
+.ocr-status.ocr-done .ocr-status-inner {
+  color: #065F46;
+}
+
+.ocr-status.ocr-error {
+  background: #FEF3C7;
+  border-color: rgba(245, 158, 11, 0.2);
+}
+.ocr-status.ocr-error .ocr-status-inner {
+  color: #92400E;
+}
