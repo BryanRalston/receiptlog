@@ -818,62 +818,71 @@ const GasLog = (() => {
 const AddReceipt = (() => {
   let photoData = null;
 
+  // Shared pipeline: scan for display, OCR on raw for accuracy
+  async function processAndOCR(rawDataURL) {
+    // Step 1: Scanner pipeline for clean visual output
+    showOCRStatus('processing');
+    try {
+      photoData = await scanImage(rawDataURL);
+    } catch (scanErr) {
+      console.warn('Image processing failed, using raw photo:', scanErr);
+      photoData = rawDataURL;
+    }
+    document.getElementById('photo-preview-img').src = photoData;
+    document.getElementById('photo-preview').style.display = '';
+
+    // Step 2: OCR on the RAW image (better accuracy than processed grayscale)
+    showOCRStatus('scanning');
+    try {
+      const { text, confidence } = await OCR.recognize(rawDataURL);
+      const parsed = OCR.parseReceipt(text);
+
+      const storeEl = document.getElementById('field-store');
+      const amountEl = document.getElementById('field-amount');
+      const dateEl = document.getElementById('field-date');
+      const categoryEl = document.getElementById('field-category');
+      const gasEl = document.getElementById('field-gas');
+      const today = new Date().toISOString().split('T')[0];
+
+      if (parsed.store && !storeEl.value) storeEl.value = parsed.store;
+      if (parsed.amount && !amountEl.value) amountEl.value = parsed.amount;
+      if (parsed.date && dateEl.value === today) dateEl.value = parsed.date;
+      if (parsed.category) {
+        categoryEl.value = parsed.category;
+        if (parsed.category === 'Gas') gasEl.checked = true;
+      }
+
+      showOCRStatus('done', confidence);
+    } catch (err) {
+      console.warn('OCR failed:', err);
+      showOCRStatus('error');
+    }
+  }
+
   function init() {
     // Default date to today
     const today = new Date().toISOString().split('T')[0];
     document.getElementById('field-date').value = today;
 
-    // Camera button triggers file input
-    document.getElementById('camera-btn').addEventListener('click', () => {
-      document.getElementById('field-photo').click();
+    // Camera button: try live viewfinder first, fall back to file input
+    document.getElementById('camera-btn').addEventListener('click', async () => {
+      try {
+        const rawDataURL = await CameraScanner.open();
+        if (!rawDataURL) return; // User closed without capturing
+        processAndOCR(rawDataURL);
+      } catch (cameraErr) {
+        // Camera not available — fall back to file input
+        console.warn('Camera viewfinder not available, using file input:', cameraErr);
+        document.getElementById('field-photo').click();
+      }
     });
 
-    // Photo file selected
+    // Photo file selected (fallback path)
     document.getElementById('field-photo').addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = async (ev) => {
-        const rawDataURL = ev.target.result;
-
-        // Process image through document scanner pipeline
-        showOCRStatus('processing');
-        try {
-          photoData = await scanImage(rawDataURL);
-        } catch (scanErr) {
-          console.warn('Image processing failed, using raw photo:', scanErr);
-          photoData = rawDataURL;
-        }
-        document.getElementById('photo-preview-img').src = photoData;
-        document.getElementById('photo-preview').style.display = '';
-
-        // OCR scanning on the processed image
-        showOCRStatus('scanning');
-        try {
-          const { text, confidence } = await OCR.recognize(photoData);
-          const parsed = OCR.parseReceipt(text);
-
-          const storeEl = document.getElementById('field-store');
-          const amountEl = document.getElementById('field-amount');
-          const dateEl = document.getElementById('field-date');
-          const categoryEl = document.getElementById('field-category');
-          const gasEl = document.getElementById('field-gas');
-          const today = new Date().toISOString().split('T')[0];
-
-          if (parsed.store && !storeEl.value) storeEl.value = parsed.store;
-          if (parsed.amount && !amountEl.value) amountEl.value = parsed.amount;
-          if (parsed.date && dateEl.value === today) dateEl.value = parsed.date;
-          if (parsed.category) {
-            categoryEl.value = parsed.category;
-            if (parsed.category === 'Gas') gasEl.checked = true;
-          }
-
-          showOCRStatus('done', confidence);
-        } catch (err) {
-          console.warn('OCR failed:', err);
-          showOCRStatus('error');
-        }
-      };
+      reader.onload = (ev) => processAndOCR(ev.target.result);
       reader.readAsDataURL(file);
     });
 
@@ -970,7 +979,16 @@ const AddReceipt = (() => {
     const notes = document.getElementById('field-notes').value.trim();
     const isGas = document.getElementById('field-gas').checked;
 
-    if (!jobId || !store || isNaN(amount) || !date) return;
+    // Validate required fields with user feedback
+    const missing = [];
+    if (!jobId) missing.push('Job');
+    if (!store) missing.push('Store');
+    if (isNaN(amount)) missing.push('Amount');
+    if (!date) missing.push('Date');
+    if (missing.length) {
+      alert('Please fill in: ' + missing.join(', '));
+      return;
+    }
 
     let receipt;
 
@@ -1170,6 +1188,81 @@ async function scanImage(dataURL, maxWidth = 1500) {
     img.src = dataURL;
   });
 }
+
+
+// ─── Camera Scanner Module ──────────────────────────────────────────────────
+const CameraScanner = (() => {
+  let stream = null;
+  let resolveCapture = null;
+
+  const viewfinder = () => document.getElementById('camera-viewfinder');
+  const video = () => document.getElementById('camera-feed');
+
+  async function open() {
+    return new Promise(async (resolve, reject) => {
+      resolveCapture = resolve;
+
+      try {
+        // Request high-resolution rear camera
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 3840 },
+            height: { ideal: 2160 },
+          },
+          audio: false
+        });
+
+        const vid = video();
+        vid.srcObject = stream;
+        await vid.play();
+        viewfinder().style.display = 'flex';
+      } catch (err) {
+        resolveCapture = null;
+        reject(err);
+      }
+    });
+  }
+
+  function capture() {
+    const vid = video();
+    const canvas = document.createElement('canvas');
+    // Use the actual video resolution for max quality
+    canvas.width = vid.videoWidth;
+    canvas.height = vid.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+    const dataURL = canvas.toDataURL('image/jpeg', 0.92);
+
+    close();
+    if (resolveCapture) {
+      resolveCapture(dataURL);
+      resolveCapture = null;
+    }
+  }
+
+  function close() {
+    viewfinder().style.display = 'none';
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+    const vid = video();
+    if (vid) vid.srcObject = null;
+    // If closed without capture, resolve with null
+    if (resolveCapture) {
+      resolveCapture(null);
+      resolveCapture = null;
+    }
+  }
+
+  function init() {
+    document.getElementById('camera-capture').addEventListener('click', capture);
+    document.getElementById('camera-close').addEventListener('click', close);
+  }
+
+  return { open, close, init };
+})();
 
 
 // ─── OCR Module ─────────────────────────────────────────────────────────────
@@ -2290,6 +2383,7 @@ const Tutorial = (() => {
   await DB.open();
   Router.init();
   AddReceipt.init();
+  CameraScanner.init();
   Export.init();
   DataManager.init();
   Tutorial.init();

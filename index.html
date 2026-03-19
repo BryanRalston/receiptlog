@@ -343,6 +343,26 @@
 
 </div>
 
+<!-- Camera Scanner Viewfinder -->
+<div id="camera-viewfinder" class="camera-viewfinder" style="display:none;">
+  <div class="camera-header">
+    <button id="camera-close" class="camera-close-btn" aria-label="Close camera">&times;</button>
+    <span class="camera-title">Scan Receipt</span>
+  </div>
+  <div class="camera-body">
+    <video id="camera-feed" autoplay playsinline muted></video>
+    <div class="camera-guide">
+      <div class="camera-guide-frame"></div>
+      <p class="camera-guide-text">Position receipt inside the frame</p>
+    </div>
+  </div>
+  <div class="camera-footer">
+    <button id="camera-capture" class="camera-capture-btn" aria-label="Capture">
+      <span class="camera-capture-ring"></span>
+    </button>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3/dist/jspdf.plugin.autotable.min.js"></script>
