@@ -834,11 +834,20 @@ const AddReceipt = (() => {
       if (!file) return;
       const reader = new FileReader();
       reader.onload = async (ev) => {
-        photoData = ev.target.result;
+        const rawDataURL = ev.target.result;
+
+        // Process image through document scanner pipeline
+        showOCRStatus('processing');
+        try {
+          photoData = await scanImage(rawDataURL);
+        } catch (scanErr) {
+          console.warn('Image processing failed, using raw photo:', scanErr);
+          photoData = rawDataURL;
+        }
         document.getElementById('photo-preview-img').src = photoData;
         document.getElementById('photo-preview').style.display = '';
 
-        // OCR scanning
+        // OCR scanning on the processed image
         showOCRStatus('scanning');
         try {
           const { text, confidence } = await OCR.recognize(photoData);
@@ -1017,6 +1026,152 @@ const AddReceipt = (() => {
 })();
 
 
+// ─── Document Scanner ───────────────────────────────────────────────────────
+// Mimics CamScanner-style processing: background subtraction flattens uneven
+// lighting, then contrast stretch makes text black and paper white, then sharpen.
+async function scanImage(dataURL, maxWidth = 1500) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      let w = img.width, h = img.height;
+      if (w > maxWidth) { const s = maxWidth / w; w = maxWidth; h = Math.round(h * s); }
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const px = imageData.data;
+
+      // Step 1: Grayscale
+      const gray = new Float32Array(w * h);
+      for (let i = 0; i < gray.length; i++) {
+        gray[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+      }
+
+      // Step 2: Background estimation via downscale → blur → upscale
+      // Downsample to ~1/16 resolution for fast blur
+      const dsF = 16;
+      const dsW = Math.max(1, Math.round(w / dsF));
+      const dsH = Math.max(1, Math.round(h / dsF));
+      const ds = new Float32Array(dsW * dsH);
+
+      // Downsample (area average)
+      for (let dy = 0; dy < dsH; dy++) {
+        for (let dx = 0; dx < dsW; dx++) {
+          let sum = 0, count = 0;
+          const sy0 = Math.round(dy * h / dsH), sy1 = Math.round((dy + 1) * h / dsH);
+          const sx0 = Math.round(dx * w / dsW), sx1 = Math.round((dx + 1) * w / dsW);
+          for (let sy = sy0; sy < sy1; sy++) {
+            for (let sx = sx0; sx < sx1; sx++) {
+              sum += gray[sy * w + sx]; count++;
+            }
+          }
+          ds[dy * dsW + dx] = sum / (count || 1);
+        }
+      }
+
+      // 3-pass box blur on downsampled (approximates Gaussian)
+      function boxBlur(arr, bw, bh, radius) {
+        const tmp = new Float32Array(bw * bh);
+        for (let pass = 0; pass < 3; pass++) {
+          // Horizontal
+          for (let y = 0; y < bh; y++) {
+            let sum = 0, count = 0;
+            for (let x = 0; x < Math.min(radius + 1, bw); x++) { sum += arr[y * bw + x]; count++; }
+            for (let x = 0; x < bw; x++) {
+              tmp[y * bw + x] = sum / count;
+              const addX = x + radius + 1, remX = x - radius;
+              if (addX < bw) { sum += arr[y * bw + addX]; count++; }
+              if (remX >= 0) { sum -= arr[y * bw + remX]; count--; }
+            }
+          }
+          // Vertical
+          for (let x = 0; x < bw; x++) {
+            let sum = 0, count = 0;
+            for (let y = 0; y < Math.min(radius + 1, bh); y++) { sum += tmp[y * bw + x]; count++; }
+            for (let y = 0; y < bh; y++) {
+              arr[y * bw + x] = sum / count;
+              const addY = y + radius + 1, remY = y - radius;
+              if (addY < bh) { sum += tmp[addY * bw + x]; count++; }
+              if (remY >= 0) { sum -= tmp[remY * bw + x]; count--; }
+            }
+          }
+        }
+      }
+      boxBlur(ds, dsW, dsH, Math.max(2, Math.round(Math.min(dsW, dsH) / 4)));
+
+      // Upsample background to full resolution (bilinear)
+      const bg = new Float32Array(w * h);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const fx = (x + 0.5) * dsW / w - 0.5;
+          const fy = (y + 0.5) * dsH / h - 0.5;
+          const x0 = Math.max(0, Math.floor(fx)), x1 = Math.min(dsW - 1, x0 + 1);
+          const y0 = Math.max(0, Math.floor(fy)), y1 = Math.min(dsH - 1, y0 + 1);
+          const dx = fx - x0, dy = fy - y0;
+          bg[y * w + x] =
+            ds[y0 * dsW + x0] * (1 - dx) * (1 - dy) +
+            ds[y0 * dsW + x1] * dx * (1 - dy) +
+            ds[y1 * dsW + x0] * (1 - dx) * dy +
+            ds[y1 * dsW + x1] * dx * dy;
+        }
+      }
+
+      // Step 3: Background subtraction + normalize
+      // result = (gray / background) * 255, clamped — flattens lighting
+      const flat = new Float32Array(w * h);
+      for (let i = 0; i < gray.length; i++) {
+        const b = Math.max(bg[i], 1);
+        flat[i] = Math.min(255, (gray[i] / b) * 220);
+      }
+
+      // Step 4: Gentle contrast stretch on the flattened image
+      const hist = new Uint32Array(256);
+      for (let i = 0; i < flat.length; i++) hist[Math.round(flat[i])]++;
+      let lo = 0, hi = 255, cum = 0;
+      for (let i = 0; i < 256; i++) { cum += hist[i]; if (cum >= flat.length * 0.01) { lo = i; break; } }
+      cum = 0;
+      for (let i = 255; i >= 0; i--) { cum += hist[i]; if (cum >= flat.length * 0.01) { hi = i; break; } }
+      if (hi <= lo) hi = lo + 1;
+      const rng = hi - lo;
+      for (let i = 0; i < flat.length; i++) {
+        flat[i] = Math.max(0, Math.min(255, (flat[i] - lo) / rng * 255));
+      }
+
+      // Step 5: Sharpen (3x3 unsharp mask)
+      const out = new Uint8ClampedArray(w * h);
+      const kern = [0, -0.5, 0, -0.5, 3, -0.5, 0, -0.5, 0];
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          let sum = 0;
+          for (let ky = -1; ky <= 1; ky++) {
+            for (let kx = -1; kx <= 1; kx++) {
+              sum += flat[(y + ky) * w + (x + kx)] * kern[(ky + 1) * 3 + (kx + 1)];
+            }
+          }
+          out[y * w + x] = Math.max(0, Math.min(255, Math.round(sum)));
+        }
+      }
+      // Copy edges from flat
+      for (let x = 0; x < w; x++) { out[x] = flat[x]; out[(h - 1) * w + x] = flat[(h - 1) * w + x]; }
+      for (let y = 0; y < h; y++) { out[y * w] = flat[y * w]; out[y * w + w - 1] = flat[y * w + w - 1]; }
+
+      // Write back to imageData
+      for (let i = 0; i < out.length; i++) {
+        px[i * 4] = px[i * 4 + 1] = px[i * 4 + 2] = out[i];
+        px[i * 4 + 3] = 255;
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+      resolve(canvas.toDataURL('image/jpeg', 0.90));
+    };
+    img.src = dataURL;
+  });
+}
+
+
 // ─── OCR Module ─────────────────────────────────────────────────────────────
 const OCR = (() => {
   let worker = null;
@@ -1055,9 +1210,11 @@ const OCR = (() => {
   }
 
   async function recognize(imageDataURL) {
-    const prepared = await prepareImage(imageDataURL);
+    // scanImage already handles resize, grayscale, contrast, and sharpening
+    // so prepareImage is no longer needed in the normal flow.
+    // Still available as fallback if recognize is called directly.
     const w = await getWorker();
-    const { data } = await w.recognize(prepared);
+    const { data } = await w.recognize(imageDataURL);
     return { text: data.text, confidence: data.confidence / 100 };
   }
 
@@ -1170,7 +1327,11 @@ function showOCRStatus(state, confidence) {
   el.style.display = '';
   el.className = 'ocr-status';
 
-  if (state === 'scanning') {
+  if (state === 'processing') {
+    icon.className = 'ocr-spinner';
+    icon.textContent = '';
+    text.textContent = 'Processing image...';
+  } else if (state === 'scanning') {
     icon.className = 'ocr-spinner';
     icon.textContent = '';
     text.textContent = 'Scanning receipt...';
@@ -1189,7 +1350,7 @@ function showOCRStatus(state, confidence) {
     text.textContent = 'Could not read receipt \u2014 enter manually';
   }
 
-  if (state !== 'scanning') {
+  if (state !== 'scanning' && state !== 'processing') {
     setTimeout(() => { el.style.display = 'none'; }, 5000);
   }
 }
