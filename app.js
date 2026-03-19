@@ -869,7 +869,7 @@ const AddReceipt = (() => {
       try {
         const rawDataURL = await CameraScanner.open();
         if (!rawDataURL) return; // User closed without capturing
-        processAndOCR(rawDataURL);
+        await processAndOCR(rawDataURL);
       } catch (cameraErr) {
         // Camera not available — fall back to file input
         console.warn('Camera viewfinder not available, using file input:', cameraErr);
@@ -908,7 +908,13 @@ const AddReceipt = (() => {
     // Form submit
     document.getElementById('receipt-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      await saveReceipt();
+      const submitBtn = e.target.querySelector('button[type="submit"]');
+      if (submitBtn) submitBtn.disabled = true;
+      try {
+        await saveReceipt();
+      } finally {
+        if (submitBtn) submitBtn.disabled = false;
+      }
     });
   }
 
@@ -1048,8 +1054,9 @@ const AddReceipt = (() => {
 // Mimics CamScanner-style processing: background subtraction flattens uneven
 // lighting, then contrast stretch makes text black and paper white, then sharpen.
 async function scanImage(dataURL, maxWidth = 1500) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
+    img.onerror = () => reject(new Error('Image load failed'));
     img.onload = () => {
       const canvas = document.createElement('canvas');
       let w = img.width, h = img.height;
@@ -1199,28 +1206,31 @@ const CameraScanner = (() => {
   const video = () => document.getElementById('camera-feed');
 
   async function open() {
-    return new Promise(async (resolve, reject) => {
+    return new Promise((resolve, reject) => {
       resolveCapture = resolve;
 
-      try {
-        // Request high-resolution rear camera
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: 'environment' },
-            width: { ideal: 3840 },
-            height: { ideal: 2160 },
-          },
-          audio: false
-        });
-
+      navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: false
+      }).then(s => {
+        stream = s;
         const vid = video();
         vid.srcObject = stream;
-        await vid.play();
-        viewfinder().style.display = 'flex';
-      } catch (err) {
+        vid.play().then(() => {
+          viewfinder().style.display = 'flex';
+        }).catch(err => {
+          resolveCapture = null;
+          if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+          reject(err);
+        });
+      }).catch(err => {
         resolveCapture = null;
         reject(err);
-      }
+      });
     });
   }
 
@@ -1259,6 +1269,10 @@ const CameraScanner = (() => {
   function init() {
     document.getElementById('camera-capture').addEventListener('click', capture);
     document.getElementById('camera-close').addEventListener('click', close);
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && stream) close();
+    });
   }
 
   return { open, close, init };
@@ -1284,8 +1298,9 @@ const OCR = (() => {
   }
 
   function prepareImage(dataURL, maxWidth = 1500) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const img = new Image();
+      img.onerror = () => reject(new Error('Image load failed'));
       img.onload = () => {
         if (img.width <= maxWidth) { resolve(dataURL); return; }
         const canvas = document.createElement('canvas');
@@ -2399,6 +2414,18 @@ const Tutorial = (() => {
 
   // Clean up any leftover demo data from a previous tutorial
   await DemoData.clear();
+
+  // Escape key handler for camera and modals
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      // Close camera viewfinder if open
+      const vf = document.getElementById('camera-viewfinder');
+      if (vf && vf.style.display !== 'none') { CameraScanner.close(); return; }
+      // Close any open modal
+      const modal = document.querySelector('.modal-overlay[style*="flex"]');
+      if (modal) modal.style.display = 'none';
+    }
+  });
 
   Dashboard.render();
 })();

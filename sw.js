@@ -1,10 +1,13 @@
-const CACHE_NAME = 'receiptlog-v5';
+const CACHE_NAME = 'receiptlog-v6';
 const ASSETS = [
   './',
   './index.html',
   './app.js',
   './styles.css',
-  './manifest.json'
+  './manifest.json',
+  'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js',
+  'https://cdn.jsdelivr.net/npm/jspdf@2/dist/jspdf.umd.min.js',
+  'https://cdn.jsdelivr.net/npm/jspdf-autotable@3/dist/jspdf.plugin.autotable.min.js'
 ];
 
 self.addEventListener('install', e => {
