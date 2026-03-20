@@ -1420,85 +1420,42 @@ const DocumentScanner = (() => {
 
   // --- Document Detection ---
 
-  function dilateEdges(edges, w, h, radius = 2) {
-    const out = new Uint8Array(w * h);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        let found = false;
-        const yStart = Math.max(0, y - radius);
-        const yEnd = Math.min(h - 1, y + radius);
-        const xStart = Math.max(0, x - radius);
-        const xEnd = Math.min(w - 1, x + radius);
-        for (let ny = yStart; ny <= yEnd && !found; ny++) {
-          for (let nx = xStart; nx <= xEnd && !found; nx++) {
-            if (edges[ny * w + nx] === 255) found = true;
-          }
-        }
-        out[y * w + x] = found ? 255 : 0;
+  function convexHull(points) {
+    // Andrew's monotone chain algorithm
+    const pts = points.slice().sort((a, b) => a.x === b.x ? a.y - b.y : a.x - b.x);
+    if (pts.length <= 2) return pts;
+
+    // Build lower hull
+    const lower = [];
+    for (const p of pts) {
+      while (lower.length >= 2) {
+        const a = lower[lower.length - 2];
+        const b = lower[lower.length - 1];
+        if ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) <= 0) {
+          lower.pop();
+        } else break;
       }
-    }
-    return out;
-  }
-
-  function findContours(edges, w, h) {
-    const visited = new Uint8Array(w * h);
-    const contours = [];
-
-    // Moore neighborhood: right, down-right, down, down-left, left, up-left, up, up-right
-    const dx = [1, 1, 0, -1, -1, -1, 0, 1];
-    const dy = [0, 1, 1, 1, 0, -1, -1, -1];
-
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
-        const i = y * w + x;
-        if (edges[i] !== 255 || visited[i]) continue;
-
-        // Check if it's a boundary pixel (has at least one non-edge neighbor)
-        let isBoundary = false;
-        for (let d = 0; d < 8; d++) {
-          const nx = x + dx[d], ny = y + dy[d];
-          if (edges[ny * w + nx] === 0) { isBoundary = true; break; }
-        }
-        if (!isBoundary) continue;
-
-        // Trace boundary using Moore neighborhood
-        const contour = [];
-        let cx = x, cy = y;
-        let startDir = 0;
-        const maxSteps = w * h;
-        let steps = 0;
-
-        do {
-          contour.push({ x: cx, y: cy });
-          visited[cy * w + cx] = 1;
-
-          let found = false;
-          for (let d = 0; d < 8; d++) {
-            const dir = (startDir + d) % 8;
-            const nx = cx + dx[dir], ny = cy + dy[dir];
-            if (nx >= 0 && nx < w && ny >= 0 && ny < h && edges[ny * w + nx] === 255) {
-              // Back direction for next iteration
-              startDir = (dir + 5) % 8;
-              cx = nx;
-              cy = ny;
-              found = true;
-              break;
-            }
-          }
-
-          if (!found) break;
-          steps++;
-        } while ((cx !== x || cy !== y) && steps < maxSteps);
-
-        if (contour.length >= 20) {
-          contours.push(contour);
-        }
-      }
+      lower.push(p);
     }
 
-    // Sort by enclosed area, largest first
-    contours.sort((a, b) => contourArea(b) - contourArea(a));
-    return contours;
+    // Build upper hull
+    const upper = [];
+    for (let i = pts.length - 1; i >= 0; i--) {
+      const p = pts[i];
+      while (upper.length >= 2) {
+        const a = upper[upper.length - 2];
+        const b = upper[upper.length - 1];
+        if ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) <= 0) {
+          upper.pop();
+        } else break;
+      }
+      upper.push(p);
+    }
+
+    // Remove last point of each half (it's repeated)
+    lower.pop();
+    upper.pop();
+    return lower.concat(upper);
   }
 
   function simplifyContour(points, epsilon) {
@@ -1538,29 +1495,6 @@ const DocumentScanner = (() => {
     if (lenSq === 0) return distance(point, lineStart);
     const num = Math.abs(dy * point.x - dx * point.y + lineEnd.x * lineStart.y - lineEnd.y * lineStart.x);
     return num / Math.sqrt(lenSq);
-  }
-
-  function findBestQuad(contours, imageArea) {
-    let best = null;
-    let bestArea = 0;
-
-    for (const contour of contours) {
-      const perim = contourPerimeter(contour);
-      const simplified = simplifyContour(contour, 0.02 * perim);
-
-      if (simplified.length !== 4) continue;
-      if (!isConvex(simplified)) continue;
-
-      const area = contourArea(simplified);
-      if (area < imageArea * 0.05 || area > imageArea * 0.95) continue;
-
-      if (area > bestArea) {
-        bestArea = area;
-        best = simplified;
-      }
-    }
-
-    return best;
   }
 
   function orderCorners(quad) {
@@ -1746,10 +1680,44 @@ const DocumentScanner = (() => {
     const suppressed = nonMaxSuppression(magnitude, direction, dw, dh);
     const edges = hysteresisThreshold(suppressed, dw, dh);
 
-    // Document detection
-    const dilated = dilateEdges(edges, dw, dh, 2);
-    const contours = findContours(dilated, dw, dh);
-    const quad = findBestQuad(contours, dw * dh);
+    // Document detection: convex hull of all edge pixels, simplify to quadrilateral
+    const edgePoints = [];
+    for (let y = 0; y < dh; y++) {
+      for (let x = 0; x < dw; x++) {
+        if (edges[y * dw + x] === 255) edgePoints.push({ x, y });
+      }
+    }
+
+    let quad = null;
+    if (edgePoints.length >= 4) {
+      const hull = convexHull(edgePoints);
+      const perim = contourPerimeter(hull);
+      const simplified = simplifyContour(hull, 0.02 * perim);
+      const imageArea = dw * dh;
+
+      let candidate = simplified;
+
+      // If 5-6 points, reduce to 4 by removing the vertex that changes the polygon least
+      while (candidate.length > 4 && candidate.length <= 6) {
+        let minImpact = Infinity;
+        let minIdx = 0;
+        for (let i = 0; i < candidate.length; i++) {
+          const prev = candidate[(i - 1 + candidate.length) % candidate.length];
+          const curr = candidate[i];
+          const next = candidate[(i + 1) % candidate.length];
+          const impact = Math.abs((next.x - prev.x) * (curr.y - prev.y) - (curr.x - prev.x) * (next.y - prev.y)) / 2;
+          if (impact < minImpact) { minImpact = impact; minIdx = i; }
+        }
+        candidate = candidate.filter((_, i) => i !== minIdx);
+      }
+
+      if (candidate.length === 4) {
+        const cArea = contourArea(candidate);
+        if (isConvex(candidate) && cArea > imageArea * 0.05 && cArea < imageArea * 0.95) {
+          quad = candidate;
+        }
+      }
+    }
 
     if (!quad) {
       return { croppedDataURL: dataURL, corners: null, detected: false };
