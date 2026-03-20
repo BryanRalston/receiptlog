@@ -818,23 +818,33 @@ const GasLog = (() => {
 const AddReceipt = (() => {
   let photoData = null;
 
-  // Shared pipeline: scan for display, OCR on raw for accuracy
+  // Shared pipeline: detect document, scan for display, OCR for accuracy
   async function processAndOCR(rawDataURL) {
-    // Step 1: Scanner pipeline for clean visual output
+    // Step 1: Detect and crop document (edge detection + perspective correction)
+    let sourceURL = rawDataURL;
+    showOCRStatus('detecting');
+    try {
+      const { croppedDataURL, detected } = await DocumentScanner.detectAndCrop(rawDataURL);
+      if (detected) sourceURL = croppedDataURL;
+    } catch (detectErr) {
+      console.warn('Document detection failed, using raw photo:', detectErr);
+    }
+
+    // Step 2: Scanner pipeline for clean visual output
     showOCRStatus('processing');
     try {
-      photoData = await scanImage(rawDataURL);
+      photoData = await scanImage(sourceURL);
     } catch (scanErr) {
       console.warn('Image processing failed, using raw photo:', scanErr);
-      photoData = rawDataURL;
+      photoData = sourceURL;
     }
     document.getElementById('photo-preview-img').src = photoData;
     document.getElementById('photo-preview').style.display = '';
 
-    // Step 2: OCR on the RAW image (better accuracy than processed grayscale)
+    // Step 3: OCR on the cropped/corrected image
     showOCRStatus('scanning');
     try {
-      const { text, confidence } = await OCR.recognize(rawDataURL);
+      const { text, confidence } = await OCR.recognize(sourceURL);
       const parsed = OCR.parseReceipt(text);
 
       const storeEl = document.getElementById('field-store');
@@ -1197,6 +1207,600 @@ async function scanImage(dataURL, maxWidth = 1500) {
 }
 
 
+// ─── Document Scanner Module ────────────────────────────────────────────────
+const DocumentScanner = (() => {
+
+  function distance(p1, p2) {
+    const dx = p1.x - p2.x;
+    const dy = p1.y - p2.y;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function contourArea(points) {
+    let area = 0;
+    const n = points.length;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      area += points[i].x * points[j].y;
+      area -= points[j].x * points[i].y;
+    }
+    return Math.abs(area) / 2;
+  }
+
+  function contourPerimeter(points) {
+    let perimeter = 0;
+    const n = points.length;
+    for (let i = 0; i < n; i++) {
+      perimeter += distance(points[i], points[(i + 1) % n]);
+    }
+    return perimeter;
+  }
+
+  function isConvex(points) {
+    const n = points.length;
+    if (n < 3) return false;
+    let sign = 0;
+    for (let i = 0; i < n; i++) {
+      const a = points[i];
+      const b = points[(i + 1) % n];
+      const c = points[(i + 2) % n];
+      const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+      if (cross !== 0) {
+        if (sign === 0) sign = cross > 0 ? 1 : -1;
+        else if ((cross > 0 ? 1 : -1) !== sign) return false;
+      }
+    }
+    return true;
+  }
+
+  function loadImage(dataURL) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = dataURL;
+    });
+  }
+
+  function computeOutputDimensions(corners) {
+    const [tl, tr, br, bl] = corners;
+    const w = Math.max(distance(tl, tr), distance(bl, br));
+    const h = Math.max(distance(tl, bl), distance(tr, br));
+    return { width: Math.round(w), height: Math.round(h) };
+  }
+
+  // --- Edge Detection (Canny Pipeline) ---
+
+  function gaussianBlur5x5(gray, w, h) {
+    const kernel = [1, 4, 6, 4, 1];
+    const kSum = 16;
+    const temp = new Float32Array(w * h);
+    const out = new Float32Array(w * h);
+
+    // Horizontal pass
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let sum = 0;
+        for (let k = -2; k <= 2; k++) {
+          const xi = Math.min(Math.max(x + k, 0), w - 1);
+          sum += gray[y * w + xi] * kernel[k + 2];
+        }
+        temp[y * w + x] = sum / kSum;
+      }
+    }
+
+    // Vertical pass
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let sum = 0;
+        for (let k = -2; k <= 2; k++) {
+          const yi = Math.min(Math.max(y + k, 0), h - 1);
+          sum += temp[yi * w + x] * kernel[k + 2];
+        }
+        out[y * w + x] = sum / kSum;
+      }
+    }
+
+    return out;
+  }
+
+  function sobelGradients(blurred, w, h) {
+    const magnitude = new Float32Array(w * h);
+    const direction = new Uint8Array(w * h);
+
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        const tl = blurred[(y - 1) * w + (x - 1)];
+        const tc = blurred[(y - 1) * w + x];
+        const tr = blurred[(y - 1) * w + (x + 1)];
+        const ml = blurred[y * w + (x - 1)];
+        const mr = blurred[y * w + (x + 1)];
+        const bl = blurred[(y + 1) * w + (x - 1)];
+        const bc = blurred[(y + 1) * w + x];
+        const br = blurred[(y + 1) * w + (x + 1)];
+
+        const gx = -tl + tr - 2 * ml + 2 * mr - bl + br;
+        const gy = -tl - 2 * tc - tr + bl + 2 * bc + br;
+
+        magnitude[i] = Math.abs(gx) + Math.abs(gy);
+
+        // Quantize direction to 0, 45, 90, 135
+        let angle = Math.atan2(gy, gx) * 180 / Math.PI;
+        if (angle < 0) angle += 180;
+        if (angle < 22.5 || angle >= 157.5) direction[i] = 0;
+        else if (angle < 67.5) direction[i] = 45;
+        else if (angle < 112.5) direction[i] = 90;
+        else direction[i] = 135;
+      }
+    }
+
+    return { magnitude, direction };
+  }
+
+  function nonMaxSuppression(magnitude, direction, w, h) {
+    const out = new Float32Array(w * h);
+
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        const mag = magnitude[i];
+        let n1 = 0, n2 = 0;
+
+        switch (direction[i]) {
+          case 0:   n1 = magnitude[i - 1]; n2 = magnitude[i + 1]; break;
+          case 45:  n1 = magnitude[(y - 1) * w + (x + 1)]; n2 = magnitude[(y + 1) * w + (x - 1)]; break;
+          case 90:  n1 = magnitude[(y - 1) * w + x]; n2 = magnitude[(y + 1) * w + x]; break;
+          case 135: n1 = magnitude[(y - 1) * w + (x - 1)]; n2 = magnitude[(y + 1) * w + (x + 1)]; break;
+        }
+
+        out[i] = (mag >= n1 && mag >= n2) ? mag : 0;
+      }
+    }
+
+    return out;
+  }
+
+  function hysteresisThreshold(suppressed, w, h) {
+    const out = new Uint8Array(w * h);
+    const size = w * h;
+
+    // Build histogram of non-zero values to find auto thresholds
+    const nonZero = [];
+    for (let i = 0; i < size; i++) {
+      if (suppressed[i] > 0) nonZero.push(suppressed[i]);
+    }
+
+    if (nonZero.length === 0) return out;
+
+    nonZero.sort((a, b) => a - b);
+    const highThresh = nonZero[Math.floor(nonZero.length * 0.9)];
+    const lowThresh = highThresh * 0.4;
+
+    // Mark strong and weak edges
+    const STRONG = 255;
+    const WEAK = 128;
+    for (let i = 0; i < size; i++) {
+      if (suppressed[i] >= highThresh) out[i] = STRONG;
+      else if (suppressed[i] >= lowThresh) out[i] = WEAK;
+    }
+
+    // BFS from strong edges to promote connected weak edges
+    const queue = [];
+    for (let i = 0; i < size; i++) {
+      if (out[i] === STRONG) queue.push(i);
+    }
+
+    while (queue.length > 0) {
+      const idx = queue.shift();
+      const x = idx % w;
+      const y = (idx - x) / w;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+            const ni = ny * w + nx;
+            if (out[ni] === WEAK) {
+              out[ni] = STRONG;
+              queue.push(ni);
+            }
+          }
+        }
+      }
+    }
+
+    // Remove remaining weak edges
+    for (let i = 0; i < size; i++) {
+      if (out[i] !== STRONG) out[i] = 0;
+    }
+
+    return out;
+  }
+
+  // --- Document Detection ---
+
+  function dilateEdges(edges, w, h, radius = 2) {
+    const out = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        let found = false;
+        const yStart = Math.max(0, y - radius);
+        const yEnd = Math.min(h - 1, y + radius);
+        const xStart = Math.max(0, x - radius);
+        const xEnd = Math.min(w - 1, x + radius);
+        for (let ny = yStart; ny <= yEnd && !found; ny++) {
+          for (let nx = xStart; nx <= xEnd && !found; nx++) {
+            if (edges[ny * w + nx] === 255) found = true;
+          }
+        }
+        out[y * w + x] = found ? 255 : 0;
+      }
+    }
+    return out;
+  }
+
+  function findContours(edges, w, h) {
+    const visited = new Uint8Array(w * h);
+    const contours = [];
+
+    // Moore neighborhood: right, down-right, down, down-left, left, up-left, up, up-right
+    const dx = [1, 1, 0, -1, -1, -1, 0, 1];
+    const dy = [0, 1, 1, 1, 0, -1, -1, -1];
+
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x;
+        if (edges[i] !== 255 || visited[i]) continue;
+
+        // Check if it's a boundary pixel (has at least one non-edge neighbor)
+        let isBoundary = false;
+        for (let d = 0; d < 8; d++) {
+          const nx = x + dx[d], ny = y + dy[d];
+          if (edges[ny * w + nx] === 0) { isBoundary = true; break; }
+        }
+        if (!isBoundary) continue;
+
+        // Trace boundary using Moore neighborhood
+        const contour = [];
+        let cx = x, cy = y;
+        let startDir = 0;
+        const maxSteps = w * h;
+        let steps = 0;
+
+        do {
+          contour.push({ x: cx, y: cy });
+          visited[cy * w + cx] = 1;
+
+          let found = false;
+          for (let d = 0; d < 8; d++) {
+            const dir = (startDir + d) % 8;
+            const nx = cx + dx[dir], ny = cy + dy[dir];
+            if (nx >= 0 && nx < w && ny >= 0 && ny < h && edges[ny * w + nx] === 255) {
+              // Back direction for next iteration
+              startDir = (dir + 5) % 8;
+              cx = nx;
+              cy = ny;
+              found = true;
+              break;
+            }
+          }
+
+          if (!found) break;
+          steps++;
+        } while ((cx !== x || cy !== y) && steps < maxSteps);
+
+        if (contour.length >= 20) {
+          contours.push(contour);
+        }
+      }
+    }
+
+    // Sort by enclosed area, largest first
+    contours.sort((a, b) => contourArea(b) - contourArea(a));
+    return contours;
+  }
+
+  function simplifyContour(points, epsilon) {
+    if (points.length <= 2) return points.slice();
+
+    if (epsilon === undefined) {
+      epsilon = 0.02 * contourPerimeter(points);
+    }
+
+    // Douglas-Peucker algorithm
+    let maxDist = 0;
+    let maxIdx = 0;
+    const first = points[0];
+    const last = points[points.length - 1];
+
+    for (let i = 1; i < points.length - 1; i++) {
+      const d = pointLineDistance(points[i], first, last);
+      if (d > maxDist) {
+        maxDist = d;
+        maxIdx = i;
+      }
+    }
+
+    if (maxDist > epsilon) {
+      const left = simplifyContour(points.slice(0, maxIdx + 1), epsilon);
+      const right = simplifyContour(points.slice(maxIdx), epsilon);
+      return left.slice(0, -1).concat(right);
+    } else {
+      return [first, last];
+    }
+  }
+
+  function pointLineDistance(point, lineStart, lineEnd) {
+    const dx = lineEnd.x - lineStart.x;
+    const dy = lineEnd.y - lineStart.y;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) return distance(point, lineStart);
+    const num = Math.abs(dy * point.x - dx * point.y + lineEnd.x * lineStart.y - lineEnd.y * lineStart.x);
+    return num / Math.sqrt(lenSq);
+  }
+
+  function findBestQuad(contours, imageArea) {
+    let best = null;
+    let bestArea = 0;
+
+    for (const contour of contours) {
+      const perim = contourPerimeter(contour);
+      const simplified = simplifyContour(contour, 0.02 * perim);
+
+      if (simplified.length !== 4) continue;
+      if (!isConvex(simplified)) continue;
+
+      const area = contourArea(simplified);
+      if (area < imageArea * 0.05 || area > imageArea * 0.95) continue;
+
+      if (area > bestArea) {
+        bestArea = area;
+        best = simplified;
+      }
+    }
+
+    return best;
+  }
+
+  function orderCorners(quad) {
+    // Compute centroid
+    let cx = 0, cy = 0;
+    for (const p of quad) { cx += p.x; cy += p.y; }
+    cx /= 4; cy /= 4;
+
+    // Sort clockwise by angle from centroid
+    const sorted = quad.slice().sort((a, b) => {
+      return Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx);
+    });
+
+    // Assign corners by sum/difference
+    let tl = null, tr = null, br = null, bl = null;
+    let minSum = Infinity, maxSum = -Infinity;
+    let minDiff = Infinity, maxDiff = -Infinity;
+
+    for (const p of sorted) {
+      const sum = p.x + p.y;
+      const diff = p.y - p.x;
+      if (sum < minSum) { minSum = sum; tl = p; }
+      if (sum > maxSum) { maxSum = sum; br = p; }
+      if (diff < minDiff) { minDiff = diff; tr = p; }
+      if (diff > maxDiff) { maxDiff = diff; bl = p; }
+    }
+
+    return [tl, tr, br, bl];
+  }
+
+  // --- Perspective Transform ---
+
+  function computeHomography(src, dst) {
+    // Build 8x9 augmented matrix [A|b]
+    const A = [];
+    for (let i = 0; i < 4; i++) {
+      const sx = src[i].x, sy = src[i].y;
+      const dx = dst[i].x, dy = dst[i].y;
+      A.push([sx, sy, 1, 0, 0, 0, -dx * sx, -dx * sy, dx]);
+      A.push([0, 0, 0, sx, sy, 1, -dy * sx, -dy * sy, dy]);
+    }
+
+    // Gaussian elimination with partial pivoting
+    const n = 8;
+    for (let col = 0; col < n; col++) {
+      // Find pivot
+      let maxVal = Math.abs(A[col][col]);
+      let maxRow = col;
+      for (let row = col + 1; row < n; row++) {
+        if (Math.abs(A[row][col]) > maxVal) {
+          maxVal = Math.abs(A[row][col]);
+          maxRow = row;
+        }
+      }
+      [A[col], A[maxRow]] = [A[maxRow], A[col]];
+
+      const pivot = A[col][col];
+      if (Math.abs(pivot) < 1e-10) return null;
+
+      for (let j = col; j <= n; j++) A[col][j] /= pivot;
+
+      for (let row = 0; row < n; row++) {
+        if (row === col) continue;
+        const factor = A[row][col];
+        for (let j = col; j <= n; j++) {
+          A[row][j] -= factor * A[col][j];
+        }
+      }
+    }
+
+    // Extract solution
+    const h = [];
+    for (let i = 0; i < n; i++) h.push(A[i][n]);
+    h.push(1); // h8 = 1
+
+    return h;
+  }
+
+  function invert3x3(H) {
+    const [a, b, c, d, e, f, g, h, i] = H;
+    const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if (Math.abs(det) < 1e-10) return null;
+    const invDet = 1 / det;
+    return [
+      (e * i - f * h) * invDet,
+      (c * h - b * i) * invDet,
+      (b * f - c * e) * invDet,
+      (f * g - d * i) * invDet,
+      (a * i - c * g) * invDet,
+      (c * d - a * f) * invDet,
+      (d * h - e * g) * invDet,
+      (b * g - a * h) * invDet,
+      (a * e - b * d) * invDet
+    ];
+  }
+
+  function warpPerspective(srcImageData, srcW, srcH, H, dstW, dstH) {
+    const Hinv = invert3x3(H);
+    if (!Hinv) return null;
+
+    const srcPx = srcImageData.data;
+    const dstCanvas = document.createElement('canvas');
+    dstCanvas.width = dstW;
+    dstCanvas.height = dstH;
+    const dstCtx = dstCanvas.getContext('2d');
+    const dstData = dstCtx.createImageData(dstW, dstH);
+    const dstPx = dstData.data;
+
+    for (let dy = 0; dy < dstH; dy++) {
+      for (let dx = 0; dx < dstW; dx++) {
+        const sx_h = Hinv[0] * dx + Hinv[1] * dy + Hinv[2];
+        const sy_h = Hinv[3] * dx + Hinv[4] * dy + Hinv[5];
+        const w_h = Hinv[6] * dx + Hinv[7] * dy + Hinv[8];
+
+        const sx = sx_h / w_h;
+        const sy = sy_h / w_h;
+
+        // Bilinear interpolation
+        const x0 = Math.floor(sx);
+        const y0 = Math.floor(sy);
+        const x1 = x0 + 1;
+        const y1 = y0 + 1;
+
+        if (x0 < 0 || y0 < 0 || x1 >= srcW || y1 >= srcH) continue;
+
+        const fx = sx - x0;
+        const fy = sy - y0;
+        const fx1 = 1 - fx;
+        const fy1 = 1 - fy;
+
+        const w00 = fx1 * fy1;
+        const w10 = fx * fy1;
+        const w01 = fx1 * fy;
+        const w11 = fx * fy;
+
+        const i00 = (y0 * srcW + x0) * 4;
+        const i10 = (y0 * srcW + x1) * 4;
+        const i01 = (y1 * srcW + x0) * 4;
+        const i11 = (y1 * srcW + x1) * 4;
+
+        const di = (dy * dstW + dx) * 4;
+        dstPx[di] = w00 * srcPx[i00] + w10 * srcPx[i10] + w01 * srcPx[i01] + w11 * srcPx[i11];
+        dstPx[di + 1] = w00 * srcPx[i00 + 1] + w10 * srcPx[i10 + 1] + w01 * srcPx[i01 + 1] + w11 * srcPx[i11 + 1];
+        dstPx[di + 2] = w00 * srcPx[i00 + 2] + w10 * srcPx[i10 + 2] + w01 * srcPx[i01 + 2] + w11 * srcPx[i11 + 2];
+        dstPx[di + 3] = 255;
+      }
+    }
+
+    dstCtx.putImageData(dstData, 0, 0);
+    return dstCanvas;
+  }
+
+  // --- Public API ---
+
+  async function detectAndCrop(dataURL) {
+    const img = await loadImage(dataURL);
+    const origW = img.naturalWidth;
+    const origH = img.naturalHeight;
+
+    // Create detection canvas (max 640px on longest side)
+    const maxDim = 640;
+    const detectScale = Math.min(maxDim / Math.max(origW, origH), 1);
+    const dw = Math.round(origW * detectScale);
+    const dh = Math.round(origH * detectScale);
+
+    const detectCanvas = document.createElement('canvas');
+    detectCanvas.width = dw;
+    detectCanvas.height = dh;
+    const detectCtx = detectCanvas.getContext('2d');
+    detectCtx.drawImage(img, 0, 0, dw, dh);
+
+    // Get grayscale Float32Array
+    const imageData = detectCtx.getImageData(0, 0, dw, dh);
+    const px = imageData.data;
+    const gray = new Float32Array(dw * dh);
+    for (let i = 0; i < gray.length; i++) {
+      gray[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+    }
+
+    // Canny edge detection pipeline
+    const blurred = gaussianBlur5x5(gray, dw, dh);
+    const { magnitude, direction } = sobelGradients(blurred, dw, dh);
+    const suppressed = nonMaxSuppression(magnitude, direction, dw, dh);
+    const edges = hysteresisThreshold(suppressed, dw, dh);
+
+    // Document detection
+    const dilated = dilateEdges(edges, dw, dh, 2);
+    const contours = findContours(dilated, dw, dh);
+    const quad = findBestQuad(contours, dw * dh);
+
+    if (!quad) {
+      return { croppedDataURL: dataURL, corners: null, detected: false };
+    }
+
+    // Order corners and scale back to full resolution
+    const ordered = orderCorners(quad);
+    const fullCorners = ordered.map(p => ({
+      x: p.x / detectScale,
+      y: p.y / detectScale
+    }));
+
+    // Compute output dimensions
+    const { width: outW, height: outH } = computeOutputDimensions(fullCorners);
+
+    // Destination corners for perspective transform
+    const dstCorners = [
+      { x: 0, y: 0 },
+      { x: outW - 1, y: 0 },
+      { x: outW - 1, y: outH - 1 },
+      { x: 0, y: outH - 1 }
+    ];
+
+    // Compute homography
+    const H = computeHomography(fullCorners, dstCorners);
+    if (!H) {
+      return { croppedDataURL: dataURL, corners: fullCorners, detected: false };
+    }
+
+    // Get full-res image data
+    const fullCanvas = document.createElement('canvas');
+    fullCanvas.width = origW;
+    fullCanvas.height = origH;
+    const fullCtx = fullCanvas.getContext('2d');
+    fullCtx.drawImage(img, 0, 0);
+    const fullImageData = fullCtx.getImageData(0, 0, origW, origH);
+
+    // Warp perspective
+    const resultCanvas = warpPerspective(fullImageData, origW, origH, H, outW, outH);
+    if (!resultCanvas) {
+      return { croppedDataURL: dataURL, corners: fullCorners, detected: false };
+    }
+
+    const croppedDataURL = resultCanvas.toDataURL('image/jpeg', 0.92);
+    return { croppedDataURL, corners: fullCorners, detected: true };
+  }
+
+  return { detectAndCrop };
+})();
+
+
 // ─── Camera Scanner Module ──────────────────────────────────────────────────
 const CameraScanner = (() => {
   let stream = null;
@@ -1435,7 +2039,11 @@ function showOCRStatus(state, confidence) {
   el.style.display = '';
   el.className = 'ocr-status';
 
-  if (state === 'processing') {
+  if (state === 'detecting') {
+    icon.className = 'ocr-spinner';
+    icon.textContent = '';
+    text.textContent = 'Detecting document...';
+  } else if (state === 'processing') {
     icon.className = 'ocr-spinner';
     icon.textContent = '';
     text.textContent = 'Processing image...';
@@ -1458,7 +2066,7 @@ function showOCRStatus(state, confidence) {
     text.textContent = 'Could not read receipt \u2014 enter manually';
   }
 
-  if (state !== 'scanning' && state !== 'processing') {
+  if (state !== 'detecting' && state !== 'scanning' && state !== 'processing') {
     setTimeout(() => { el.style.display = 'none'; }, 5000);
   }
 }
