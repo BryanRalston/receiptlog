@@ -830,21 +830,22 @@ const AddReceipt = (() => {
       console.warn('Document detection failed, using raw photo:', detectErr);
     }
 
-    // Step 2: Scanner pipeline for clean visual output
+    // Step 2: Use color image for display (not grayscale)
     showOCRStatus('processing');
-    try {
-      photoData = await scanImage(sourceURL);
-    } catch (scanErr) {
-      console.warn('Image processing failed, using raw photo:', scanErr);
-      photoData = sourceURL;
-    }
+    photoData = sourceURL;
     document.getElementById('photo-preview-img').src = photoData;
     document.getElementById('photo-preview').style.display = '';
 
-    // Step 3: OCR on the cropped/corrected image
+    // Step 3: OCR on the image (scanImage grayscale used only for OCR accuracy)
     showOCRStatus('scanning');
+    let ocrSource = sourceURL;
     try {
-      const { text, confidence } = await OCR.recognize(sourceURL);
+      ocrSource = await scanImage(sourceURL);
+    } catch (scanErr) {
+      console.warn('Image processing for OCR failed, using source:', scanErr);
+    }
+    try {
+      const { text, confidence } = await OCR.recognize(ocrSource);
       const parsed = OCR.parseReceipt(text);
 
       const storeEl = document.getElementById('field-store');
@@ -1374,8 +1375,8 @@ const DocumentScanner = (() => {
     if (nonZero.length === 0) return out;
 
     nonZero.sort((a, b) => a - b);
-    const highThresh = nonZero[Math.floor(nonZero.length * 0.9)];
-    const lowThresh = highThresh * 0.4;
+    const highThresh = nonZero[Math.floor(nonZero.length * 0.95)];
+    const lowThresh = highThresh * 0.5;
 
     // Mark strong and weak edges
     const STRONG = 255;
@@ -1674,8 +1675,8 @@ const DocumentScanner = (() => {
       gray[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
     }
 
-    // Canny edge detection pipeline
-    const blurred = gaussianBlur5x5(gray, dw, dh);
+    // Canny edge detection pipeline (double blur to suppress texture noise)
+    const blurred = gaussianBlur5x5(gaussianBlur5x5(gray, dw, dh), dw, dh);
     const { magnitude, direction } = sobelGradients(blurred, dw, dh);
     const suppressed = nonMaxSuppression(magnitude, direction, dw, dh);
     const edges = hysteresisThreshold(suppressed, dw, dh);
@@ -1713,7 +1714,7 @@ const DocumentScanner = (() => {
 
       if (candidate.length === 4) {
         const cArea = contourArea(candidate);
-        if (isConvex(candidate) && cArea > imageArea * 0.05 && cArea < imageArea * 0.95) {
+        if (isConvex(candidate) && cArea > imageArea * 0.05 && cArea < imageArea * 0.80) {
           quad = candidate;
         }
       }
