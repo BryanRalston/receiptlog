@@ -663,7 +663,7 @@ const Jobs = (() => {
   function initModal() {
     document.getElementById('modal-close').addEventListener('click', closeJobModal);
     document.getElementById('modal-overlay').addEventListener('click', (e) => {
-      if (e.target.id === 'modal-overlay') closeJobModal();
+      if (!e.target.closest('.modal')) closeJobModal();
     });
     document.getElementById('job-form').addEventListener('submit', saveJob);
   }
@@ -2146,7 +2146,7 @@ const DataManager = (() => {
       modalOverlay.style.display = 'none';
     });
     modalOverlay.addEventListener('click', (e) => {
-      if (e.target === modalOverlay) modalOverlay.style.display = 'none';
+      if (!e.target.closest('.modal')) modalOverlay.style.display = 'none';
     });
     document.getElementById('btn-backup-share').addEventListener('click', shareBackup);
     document.getElementById('btn-backup-download').addEventListener('click', downloadBackup);
