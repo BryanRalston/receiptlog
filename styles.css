@@ -391,6 +391,58 @@ small {
   max-width: 180px;
 }
 
+/* === Receipt Items (Parsed Line Items) === */
+.receipt-items {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.receipt-item-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  padding: 2px 0;
+}
+
+.receipt-item-row .item-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.receipt-item-row .item-price {
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.receipt-item-row .item-qty {
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.receipt-item-row .item-return {
+  font-size: 10px;
+  font-weight: 600;
+  color: #EF4444;
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.receipt-items-more {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-top: 2px;
+  font-style: italic;
+}
+
 /* === Receipt Groups (Job Detail) === */
 .receipt-groups {
   display: flex;

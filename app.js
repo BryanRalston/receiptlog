@@ -165,6 +165,20 @@ function escapeHTML(str) {
   return div.innerHTML;
 }
 
+function renderReceiptItems(r) {
+  const items = r.items || [];
+  if (items.length === 0) {
+    return r.notes ? `<div class="receipt-notes">${escapeHTML(r.notes)}</div>` : '';
+  }
+  const rows = items.slice(0, 8).map(it => {
+    const qtyStr = it.qty > 1 ? `<span class="item-qty">${it.qty}x</span> ` : '';
+    const prefix = it.totalPrice < 0 ? '<span class="item-return">RET</span> ' : '';
+    return `<div class="receipt-item-row">${prefix}${qtyStr}<span class="item-name">${escapeHTML(it.name)}</span><span class="item-price">${formatMoney(Math.abs(it.totalPrice))}</span></div>`;
+  });
+  const more = items.length > 8 ? `<div class="receipt-items-more">+${items.length - 8} more items</div>` : '';
+  return `<div class="receipt-items">${rows.join('')}${more}</div>`;
+}
+
 
 // ─── Dashboard Module ───────────────────────────────────────────────────────
 const Dashboard = (() => {
@@ -246,7 +260,7 @@ const Dashboard = (() => {
             <span class="amount">${formatMoney(r.amount)}</span>
           </div>
           <span class="category-tag cat-${(r.category || 'Other').toLowerCase()}">${escapeHTML(r.category || 'Other')}</span>
-          ${r.notes ? `<div class="receipt-notes">${escapeHTML(r.notes)}</div>` : ''}
+          ${renderReceiptItems(r)}
         </div>`;
       })
       .join('');
@@ -589,7 +603,7 @@ const Jobs = (() => {
                   <span class="amount">${formatMoney(r.amount)}</span>
                   <span class="category-tag cat-${(r.category || 'Other').toLowerCase()}">${escapeHTML(r.category || 'Other')}</span>
                 </div>
-                ${r.notes ? `<div class="receipt-notes">${escapeHTML(r.notes)}</div>` : ''}
+                ${renderReceiptItems(r)}
                 ${r.photo ? `<img class="photo-thumb" src="${r.photo}" alt="Receipt photo">` : ''}
                 <div class="receipt-card-actions">
                   ${r.photo ? `<button class="btn-icon btn-share-photo" data-id="${r.id}" title="Share Photo">&#x1F4E4;</button>` : ''}
@@ -793,7 +807,7 @@ const GasLog = (() => {
                   <span class="receipt-store">${escapeHTML(r.store)}</span>
                   <span class="amount">${formatMoney(r.amount)}</span>
                 </div>
-                ${r.notes ? `<div class="receipt-notes">${escapeHTML(r.notes)}</div>` : ''}
+                ${renderReceiptItems(r)}
               </div>`;
             }).join('')}
           </div>
@@ -886,7 +900,23 @@ const AddReceipt = (() => {
         if (parsed.category === 'Gas') gasEl.checked = true;
       }
 
-      showOCRStatus('done', confidence);
+      // Auto-populate Details with parsed line items
+      const notesEl = document.getElementById('field-notes');
+      if (parsed.items.length > 0 && !notesEl.value) {
+        const itemLines = parsed.items.map(it => {
+          const price = '$' + Math.abs(it.totalPrice).toFixed(2);
+          const prefix = it.totalPrice < 0 ? '(-) ' : '';
+          const qtyStr = it.qty > 1 ? `${it.qty}x ` : '';
+          return `${prefix}${qtyStr}${it.name} — ${price}`;
+        });
+        if (parsed.subtotal != null) itemLines.push(`Subtotal: $${parsed.subtotal.toFixed(2)}`);
+        if (parsed.tax != null) itemLines.push(`Tax: $${parsed.tax.toFixed(2)}`);
+        notesEl.value = itemLines.join('\n');
+        // Store structured items for later use
+        notesEl.dataset.parsedItems = JSON.stringify(parsed.items);
+      }
+
+      showOCRStatus('done', confidence, parsed.items.length);
     } catch (err) {
       console.warn('OCR failed:', err);
       showOCRStatus('error');
@@ -1023,8 +1053,13 @@ const AddReceipt = (() => {
     const amount = parseFloat(document.getElementById('field-amount').value);
     const date = document.getElementById('field-date').value;
     const category = document.getElementById('field-category').value;
-    const notes = document.getElementById('field-notes').value.trim();
+    const notesEl = document.getElementById('field-notes');
+    const notes = notesEl.value.trim();
     const isGas = document.getElementById('field-gas').checked;
+
+    // Retrieve parsed items if available
+    let items = [];
+    try { items = JSON.parse(notesEl.dataset.parsedItems || '[]'); } catch(e) { /* ignore */ }
 
     // Validate required fields with user feedback
     const missing = [];
@@ -1050,6 +1085,7 @@ const AddReceipt = (() => {
         category,
         notes,
         isGas,
+        items,
         photo: photoData || null,
         created: existing ? existing.created : Date.now(),
         submitted: existing ? !!existing.submitted : false,
@@ -1064,6 +1100,7 @@ const AddReceipt = (() => {
         category,
         notes,
         isGas,
+        items,
         photo: photoData || null,
         created: Date.now(),
         submitted: false,
@@ -1984,7 +2021,7 @@ const OCR = (() => {
 
   function parseReceipt(text) {
     const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-    const result = { store: null, amount: null, date: null, category: null };
+    const result = { store: null, amount: null, date: null, category: null, items: [], subtotal: null, tax: null };
 
     // --- Amount: look for TOTAL line, take last match ---
     const totalRe = /(?:TOTAL|GRAND\s*TOTAL|AMOUNT\s*DUE|BALANCE\s*DUE|AMT\s*DUE)\s*[:$]?\s*\$?\s*(\d+[.,]\d{2})/gi;
@@ -1995,7 +2032,6 @@ const OCR = (() => {
     if (lastTotal) {
       result.amount = parseFloat(lastTotal).toFixed(2);
     } else {
-      // Fallback: largest dollar amount on receipt
       const amountRe = /\$?\s*(\d{1,6}\.\d{2})/g;
       let amtMatch, largest = 0;
       while ((amtMatch = amountRe.exec(text)) !== null) {
@@ -2003,6 +2039,18 @@ const OCR = (() => {
         if (v > largest && v < 100000) largest = v;
       }
       if (largest > 0) result.amount = largest.toFixed(2);
+    }
+
+    // --- Subtotal & Tax ---
+    const subRe = /(?:SUB\s*TOTAL|SUBTOTAL)\s*[:$]?\s*\$?\s*(\d+[.,]\d{2})/gi;
+    let subMatch;
+    while ((subMatch = subRe.exec(text)) !== null) {
+      result.subtotal = parseFloat(subMatch[1].replace(',', '.'));
+    }
+    const taxRe = /(?:SALES?\s*TAX|TAX)\s*[:$]?\s*\$?\s*(\d+[.,]\d{2})/gi;
+    let txMatch;
+    while ((txMatch = taxRe.exec(text)) !== null) {
+      result.tax = parseFloat(txMatch[1].replace(',', '.'));
     }
 
     // --- Date ---
@@ -2058,7 +2106,6 @@ const OCR = (() => {
     }
 
     if (!result.store) {
-      // Use first non-trivial line (store name is typically at the top)
       for (let i = 0; i < Math.min(5, lines.length); i++) {
         const line = lines[i];
         if (line.length >= 3 && line.length <= 40 && /[a-zA-Z]{2,}/.test(line) && !/^\d{3}[\s-]?\d{3}/.test(line) && !/^\d+\s+(N|S|E|W|North|South)/.test(line)) {
@@ -2068,8 +2115,80 @@ const OCR = (() => {
       }
     }
 
-    // Category default for contractors
     if (!result.category) result.category = 'Materials';
+
+    // --- Line Item Extraction ---
+    // Skip patterns: summary lines, payment, header/footer, metadata
+    const SKIP_LINE = /\b(sub\s*total|subtotal|total|grand\s*total|amount\s*due|balance\s*due|sales?\s*tax|tax\b|visa|master\s*card|debit|credit|change\s*due|cash\s*tend|tender|approved|declined|thank\s*you|welcome|saved?\s*you|you\s*saved|store\s*#|trans\b|auth\s*#|ref\s*#|chip\s*read|return\s*by|rewards?|member|points?\s*earned|coupon|discount|promo|receipt\s*#)/i;
+    const META_LINE = /^(\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}$|^\d+\s+(N|S|E|W|North|South|East|West)\b|^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b|^\d{2}:\d{2}|^#{3,}|^-{3,}|^={3,}|^\*{3,})/i;
+
+    // Price at end of line: "ITEM NAME    12.47" or "ITEM NAME  $12.47" or "ITEM NAME  12.47 T"
+    const PRICE_AT_END = /^(.+?)\s+([-]?\$?\s*\d{1,6}\.\d{2})\s*[A-Z]?\s*$/;
+    // Quantity pattern: "2 @ 5.99" or "2@$5.99" or "3 x 5.99"
+    const QTY_PATTERN = /(\d+)\s*[@xX]\s*\$?\s*(\d+\.\d{2})/;
+
+    for (const line of lines) {
+      if (line.length < 4) continue;
+      if (SKIP_LINE.test(line)) continue;
+      if (META_LINE.test(line)) continue;
+      // Skip barcode-like lines (long digit strings)
+      if (/^\d{8,}$/.test(line.replace(/[\s-]/g, ''))) continue;
+      // Skip lines that are ONLY numbers/symbols (no letters = not an item name)
+      if (!/[a-zA-Z]{2,}/.test(line)) continue;
+
+      const priceMatch = line.match(PRICE_AT_END);
+      if (!priceMatch) continue;
+
+      let name = priceMatch[1].trim();
+      const priceStr = priceMatch[2].replace(/[$\s]/g, '');
+      const totalPrice = parseFloat(priceStr);
+
+      if (isNaN(totalPrice) || totalPrice === 0 || Math.abs(totalPrice) > 50000) continue;
+
+      // Check for quantity (e.g., "PAINT PRIMER 2@5.99")
+      let qty = 1;
+      let unitPrice = totalPrice;
+      const qtyMatch = name.match(QTY_PATTERN);
+      if (qtyMatch) {
+        qty = parseInt(qtyMatch[1], 10);
+        unitPrice = parseFloat(qtyMatch[2]);
+        name = name.replace(QTY_PATTERN, '').trim();
+      } else {
+        // Check for "2 EA" or "QTY 3" preceding the item
+        const qtyPrefixMatch = name.match(/^(\d+)\s*(?:EA|PK|PC|CT)\s+(.+)/i);
+        if (qtyPrefixMatch) {
+          qty = parseInt(qtyPrefixMatch[1], 10);
+          name = qtyPrefixMatch[2].trim();
+          unitPrice = qty > 0 ? +(totalPrice / qty).toFixed(2) : totalPrice;
+        }
+      }
+
+      // Clean item name: collapse whitespace, remove trailing junk
+      name = name.replace(/\s{2,}/g, ' ').replace(/^[-–—\s]+|[-–—\s]+$/g, '');
+      if (name.length < 2) continue;
+
+      // Handle negative prices (returns/discounts)
+      const isReturn = totalPrice < 0 || /\breturn\b/i.test(name);
+
+      result.items.push({
+        name,
+        qty,
+        unitPrice: isReturn ? -Math.abs(unitPrice) : unitPrice,
+        totalPrice: isReturn ? -Math.abs(totalPrice) : totalPrice,
+      });
+    }
+
+    // Validate: if item sum is close to subtotal, we have good extraction
+    if (result.items.length > 0) {
+      const itemSum = result.items.reduce((s, i) => s + i.totalPrice, 0);
+      const compareTarget = result.subtotal || (result.amount ? parseFloat(result.amount) - (result.tax || 0) : null);
+      if (compareTarget && Math.abs(itemSum - compareTarget) > compareTarget * 0.3) {
+        // Items sum is way off — OCR noise likely produced bad items, keep but flag
+        result.itemsValidated = false;
+      } else {
+        result.itemsValidated = true;
+      }
+    }
 
     return result;
   }
@@ -2082,7 +2201,7 @@ const OCR = (() => {
   return { recognize, parseReceipt, destroy };
 })();
 
-function showOCRStatus(state, confidence) {
+function showOCRStatus(state, confidence, itemCount) {
   const el = document.getElementById('ocr-status');
   const icon = document.getElementById('ocr-status-icon');
   const text = document.getElementById('ocr-status-text');
@@ -2098,7 +2217,7 @@ function showOCRStatus(state, confidence) {
   } else if (state === 'processing') {
     icon.className = 'ocr-spinner';
     icon.textContent = '';
-    text.textContent = 'Processing image...';
+    text.textContent = 'Enhancing image...';
   } else if (state === 'scanning') {
     icon.className = 'ocr-spinner';
     icon.textContent = '';
@@ -2108,8 +2227,9 @@ function showOCRStatus(state, confidence) {
     icon.className = '';
     icon.textContent = '\u2713';
     const confPct = Math.round((confidence || 0) * 100);
+    const itemsMsg = itemCount > 0 ? ` \u2022 ${itemCount} items found` : '';
     text.textContent = confPct >= 60
-      ? 'Fields auto-filled \u2014 review and save'
+      ? `Fields auto-filled${itemsMsg} \u2014 review and save`
       : 'Low confidence scan \u2014 please check all fields';
   } else if (state === 'error') {
     el.classList.add('ocr-error');
@@ -2159,11 +2279,16 @@ const Export = (() => {
   }
 
   function jobToCSV(job, receipts) {
-    const header = 'Date,Store,Category,Amount,Gas,Submitted,Notes';
+    const header = 'Date,Store,Category,Amount,Gas,Submitted,Items,Notes';
     const rows = receipts
       .slice()
       .sort((a, b) => (a.date || '').localeCompare(b.date || ''))
       .map((r) => {
+        // Format items as semicolon-delimited list: "2x Item Name $12.47; Item2 $5.99"
+        const itemsStr = (r.items || []).map(it => {
+          const qty = it.qty > 1 ? `${it.qty}x ` : '';
+          return `${qty}${it.name} $${Math.abs(it.totalPrice).toFixed(2)}`;
+        }).join('; ');
         return [
           r.date || '',
           csvEscape(r.store || ''),
@@ -2171,6 +2296,7 @@ const Export = (() => {
           (Number(r.amount) || 0).toFixed(2),
           r.isGas ? 'Yes' : 'No',
           r.submitted ? 'Yes' : 'No',
+          csvEscape(itemsStr),
           csvEscape(r.notes || ''),
         ].join(',');
       });
@@ -2273,7 +2399,10 @@ const Export = (() => {
         <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;font-weight:500;">${esc(r.store)}</td>
         <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;"><span style="${getCatStyle(r.category || 'Other')}">${esc(r.category || 'Other')}</span></td>
         <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;text-align:right;font-weight:600;font-variant-numeric:tabular-nums;">${fmtMoney(r.amount)}</td>
-        <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;color:#4B5563;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.notes)}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;color:#4B5563;max-width:200px;">${(r.items || []).length > 0
+          ? (r.items || []).map(it => `<div style="font-size:12px;display:flex;justify-content:space-between;gap:8px;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${it.qty > 1 ? it.qty + 'x ' : ''}${esc(it.name)}</span><span style="white-space:nowrap;font-weight:500;">${fmtMoney(it.totalPrice)}</span></div>`).join('')
+          : `<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(r.notes)}</span>`
+        }</td>
         <td style="padding:8px 12px;border-bottom:1px solid #E2E5F0;white-space:nowrap;">
           <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor};margin-right:6px;vertical-align:middle;"></span>
           <span style="color:${statusColor};font-weight:500;font-size:13px;">${statusLabel}</span>
@@ -2497,8 +2626,15 @@ const Export = (() => {
     summary += `\nDETAIL:\n`;
     receipts.slice().sort((a, b) => (a.date || '').localeCompare(b.date || '')).forEach(r => {
       summary += `  ${r.date || 'N/A'}  ${r.store}  ${formatMoney(r.amount)}  ${r.category || ''}`;
-      if (r.notes) summary += `  (${r.notes})`;
       summary += `  [${r.submitted ? 'Submitted' : 'Pending'}]\n`;
+      if ((r.items || []).length > 0) {
+        r.items.forEach(it => {
+          const qty = it.qty > 1 ? `${it.qty}x ` : '';
+          summary += `    - ${qty}${it.name}  ${formatMoney(it.totalPrice)}\n`;
+        });
+      } else if (r.notes) {
+        summary += `    (${r.notes})\n`;
+      }
     });
     summary += `\nGenerated by ReceiptLog — ${new Date().toLocaleString()}`;
     return summary;
@@ -2619,15 +2755,20 @@ const PDFExport = (() => {
 
     doc.autoTable({
       startY: 52,
-      head: [['Date', 'Store', 'Category', 'Amount', 'Details', 'Status']],
-      body: sorted.map(r => [
-        r.date || '',
-        r.store || '',
-        r.category || 'Other',
-        formatMoney(parseFloat(r.amount) || 0),
-        r.notes || r.details || '',
-        r.submitted ? 'Submitted' : 'Pending'
-      ]),
+      head: [['Date', 'Store', 'Category', 'Amount', 'Items', 'Status']],
+      body: sorted.map(r => {
+        const itemsStr = (r.items || []).length > 0
+          ? r.items.map(it => `${it.qty > 1 ? it.qty + 'x ' : ''}${it.name} ${formatMoney(it.totalPrice)}`).join('\n')
+          : (r.notes || '');
+        return [
+          r.date || '',
+          r.store || '',
+          r.category || 'Other',
+          formatMoney(parseFloat(r.amount) || 0),
+          itemsStr,
+          r.submitted ? 'Submitted' : 'Pending'
+        ];
+      }),
       foot: [['', '', 'TOTAL', formatMoney(totalSpend), '', '']],
       margin: { left: margin, right: margin },
       styles: { fontSize: 8, cellPadding: 5 },

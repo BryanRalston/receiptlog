@@ -1,4 +1,4 @@
-const CACHE_NAME = 'receiptlog-v8';
+const CACHE_NAME = 'receiptlog-v9';
 const ASSETS = [
   './',
   './index.html',
