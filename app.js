@@ -818,7 +818,28 @@ const GasLog = (() => {
 const AddReceipt = (() => {
   let photoData = null;
 
-  // Shared pipeline: detect document, scan for display, OCR for accuracy
+  // Compress photos before storing to reduce IndexedDB pressure
+  function compressPhoto(dataUrl, maxWidth = 1200, quality = 0.7) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let w = img.width, h = img.height;
+        if (w > maxWidth) {
+          h = Math.round(h * maxWidth / w);
+          w = maxWidth;
+        }
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = () => resolve(dataUrl); // fallback to original
+      img.src = dataUrl;
+    });
+  }
+
+  // Shared pipeline: detect document, enhance, display, OCR
   async function processAndOCR(rawDataURL) {
     // Step 1: Detect and crop document (edge detection + perspective correction)
     let sourceURL = rawDataURL;
@@ -830,22 +851,24 @@ const AddReceipt = (() => {
       console.warn('Document detection failed, using raw photo:', detectErr);
     }
 
-    // Step 2: Use color image for display (not grayscale)
+    // Step 2: Enhance image (color-preserving, iOS Notes-style)
     showOCRStatus('processing');
-    photoData = sourceURL;
+    let enhancedURL = sourceURL;
+    try {
+      enhancedURL = await scanImage(sourceURL);
+    } catch (scanErr) {
+      console.warn('Image enhancement failed, using source:', scanErr);
+    }
+
+    // Step 3: Store and display the enhanced image
+    photoData = await compressPhoto(enhancedURL);
     document.getElementById('photo-preview-img').src = photoData;
     document.getElementById('photo-preview').style.display = '';
 
-    // Step 3: OCR on the image (scanImage grayscale used only for OCR accuracy)
+    // Step 4: OCR on the enhanced image
     showOCRStatus('scanning');
-    let ocrSource = sourceURL;
     try {
-      ocrSource = await scanImage(sourceURL);
-    } catch (scanErr) {
-      console.warn('Image processing for OCR failed, using source:', scanErr);
-    }
-    try {
-      const { text, confidence } = await OCR.recognize(ocrSource);
+      const { text, confidence } = await OCR.recognize(enhancedURL);
       const parsed = OCR.parseReceipt(text);
 
       const storeEl = document.getElementById('field-store');
@@ -984,6 +1007,13 @@ const AddReceipt = (() => {
       document.getElementById('photo-preview').style.display = 'none';
       document.getElementById('photo-preview-img').src = '';
     }
+
+    // Apply pending category (e.g., from "Add Gas" button)
+    if (AddReceipt._pendingCategory) {
+      document.getElementById('field-category').value = AddReceipt._pendingCategory;
+      document.getElementById('field-gas').checked = AddReceipt._pendingCategory === 'Gas';
+      AddReceipt._pendingCategory = null;
+    }
   }
 
   async function saveReceipt() {
@@ -1040,9 +1070,15 @@ const AddReceipt = (() => {
       };
     }
 
-    await DB.put('receipts', receipt);
+    try {
+      await DB.put('receipts', receipt);
+    } catch (err) {
+      console.error('Failed to save receipt:', err);
+      alert('Failed to save receipt. Storage may be full.');
+      return; // Don't reset the form — user's data is still there
+    }
 
-    // Clear form
+    // Clear form (only on success)
     document.getElementById('receipt-form').reset();
     document.getElementById('receipt-edit-id').value = '';
     photoData = null;
@@ -1064,6 +1100,9 @@ const AddReceipt = (() => {
 // ─── Document Scanner ───────────────────────────────────────────────────────
 // Mimics CamScanner-style processing: background subtraction flattens uneven
 // lighting, then contrast stretch makes text black and paper white, then sharpen.
+// iOS Notes-style color-preserving document enhancement
+// Pipeline: luminance background estimation → color-preserving light normalization →
+// adaptive contrast → paper white push → luminance-space sharpening
 async function scanImage(dataURL, maxWidth = 1500) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -1079,21 +1118,21 @@ async function scanImage(dataURL, maxWidth = 1500) {
 
       const imageData = ctx.getImageData(0, 0, w, h);
       const px = imageData.data;
+      const totalPx = w * h;
 
-      // Step 1: Grayscale
-      const gray = new Float32Array(w * h);
-      for (let i = 0; i < gray.length; i++) {
-        gray[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+      // Step 1: Compute luminance (all adjustments reference this, colors stay in RGB)
+      const lum = new Float32Array(totalPx);
+      for (let i = 0; i < totalPx; i++) {
+        lum[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
       }
 
-      // Step 2: Background estimation via downscale → blur → upscale
-      // Downsample to ~1/16 resolution for fast blur
+      // Step 2: Background luminance estimation via downsample → blur → upsample
+      // This captures the ambient lighting pattern (shadows, uneven exposure)
       const dsF = 16;
       const dsW = Math.max(1, Math.round(w / dsF));
       const dsH = Math.max(1, Math.round(h / dsF));
       const ds = new Float32Array(dsW * dsH);
 
-      // Downsample (area average)
       for (let dy = 0; dy < dsH; dy++) {
         for (let dx = 0; dx < dsW; dx++) {
           let sum = 0, count = 0;
@@ -1101,7 +1140,7 @@ async function scanImage(dataURL, maxWidth = 1500) {
           const sx0 = Math.round(dx * w / dsW), sx1 = Math.round((dx + 1) * w / dsW);
           for (let sy = sy0; sy < sy1; sy++) {
             for (let sx = sx0; sx < sx1; sx++) {
-              sum += gray[sy * w + sx]; count++;
+              sum += lum[sy * w + sx]; count++;
             }
           }
           ds[dy * dsW + dx] = sum / (count || 1);
@@ -1112,7 +1151,6 @@ async function scanImage(dataURL, maxWidth = 1500) {
       function boxBlur(arr, bw, bh, radius) {
         const tmp = new Float32Array(bw * bh);
         for (let pass = 0; pass < 3; pass++) {
-          // Horizontal
           for (let y = 0; y < bh; y++) {
             let sum = 0, count = 0;
             for (let x = 0; x < Math.min(radius + 1, bw); x++) { sum += arr[y * bw + x]; count++; }
@@ -1123,7 +1161,6 @@ async function scanImage(dataURL, maxWidth = 1500) {
               if (remX >= 0) { sum -= arr[y * bw + remX]; count--; }
             }
           }
-          // Vertical
           for (let x = 0; x < bw; x++) {
             let sum = 0, count = 0;
             for (let y = 0; y < Math.min(radius + 1, bh); y++) { sum += tmp[y * bw + x]; count++; }
@@ -1138,70 +1175,108 @@ async function scanImage(dataURL, maxWidth = 1500) {
       }
       boxBlur(ds, dsW, dsH, Math.max(2, Math.round(Math.min(dsW, dsH) / 4)));
 
-      // Upsample background to full resolution (bilinear)
-      const bg = new Float32Array(w * h);
+      // Upsample background to full resolution (bilinear interpolation)
+      const bg = new Float32Array(totalPx);
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const fx = (x + 0.5) * dsW / w - 0.5;
           const fy = (y + 0.5) * dsH / h - 0.5;
           const x0 = Math.max(0, Math.floor(fx)), x1 = Math.min(dsW - 1, x0 + 1);
           const y0 = Math.max(0, Math.floor(fy)), y1 = Math.min(dsH - 1, y0 + 1);
-          const dx = fx - x0, dy = fy - y0;
+          const bx = fx - x0, by = fy - y0;
           bg[y * w + x] =
-            ds[y0 * dsW + x0] * (1 - dx) * (1 - dy) +
-            ds[y0 * dsW + x1] * dx * (1 - dy) +
-            ds[y1 * dsW + x0] * (1 - dx) * dy +
-            ds[y1 * dsW + x1] * dx * dy;
+            ds[y0 * dsW + x0] * (1 - bx) * (1 - by) +
+            ds[y0 * dsW + x1] * bx * (1 - by) +
+            ds[y1 * dsW + x0] * (1 - bx) * by +
+            ds[y1 * dsW + x1] * bx * by;
         }
       }
 
-      // Step 3: Background subtraction + normalize
-      // result = (gray / background) * 255, clamped — flattens lighting
-      const flat = new Float32Array(w * h);
-      for (let i = 0; i < gray.length; i++) {
-        const b = Math.max(bg[i], 1);
-        flat[i] = Math.min(255, (gray[i] / b) * 220);
+      // Step 3: Color-preserving lighting normalization
+      // Divide each pixel's RGB by its local background luminance, scale to target white
+      // This removes shadows and evens out lighting while preserving hue/saturation
+      const targetL = 235;
+      for (let i = 0; i < totalPx; i++) {
+        const bgVal = Math.max(bg[i], 1);
+        const ratio = Math.min(targetL / bgVal, 3.5); // cap to prevent noise amplification
+        px[i * 4]     = Math.min(255, Math.round(px[i * 4] * ratio));
+        px[i * 4 + 1] = Math.min(255, Math.round(px[i * 4 + 1] * ratio));
+        px[i * 4 + 2] = Math.min(255, Math.round(px[i * 4 + 2] * ratio));
       }
 
-      // Step 4: Gentle contrast stretch on the flattened image
+      // Step 4: Adaptive contrast stretch (luminance-based, applied proportionally to RGB)
+      // Recompute luminance after normalization
+      const lumN = new Float32Array(totalPx);
+      for (let i = 0; i < totalPx; i++) {
+        lumN[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+      }
+
       const hist = new Uint32Array(256);
-      for (let i = 0; i < flat.length; i++) hist[Math.round(flat[i])]++;
+      for (let i = 0; i < totalPx; i++) hist[Math.min(255, Math.round(lumN[i]))]++;
       let lo = 0, hi = 255, cum = 0;
-      for (let i = 0; i < 256; i++) { cum += hist[i]; if (cum >= flat.length * 0.01) { lo = i; break; } }
+      for (let v = 0; v < 256; v++) { cum += hist[v]; if (cum >= totalPx * 0.005) { lo = v; break; } }
       cum = 0;
-      for (let i = 255; i >= 0; i--) { cum += hist[i]; if (cum >= flat.length * 0.01) { hi = i; break; } }
+      for (let v = 255; v >= 0; v--) { cum += hist[v]; if (cum >= totalPx * 0.005) { hi = v; break; } }
       if (hi <= lo) hi = lo + 1;
       const rng = hi - lo;
-      for (let i = 0; i < flat.length; i++) {
-        flat[i] = Math.max(0, Math.min(255, (flat[i] - lo) / rng * 255));
+
+      for (let i = 0; i < totalPx; i++) {
+        const oldL = lumN[i];
+        if (oldL < 1) continue;
+        const newL = Math.max(0, Math.min(255, (oldL - lo) / rng * 255));
+        const scale = newL / oldL;
+        px[i * 4]     = Math.min(255, Math.round(px[i * 4] * scale));
+        px[i * 4 + 1] = Math.min(255, Math.round(px[i * 4 + 1] * scale));
+        px[i * 4 + 2] = Math.min(255, Math.round(px[i * 4 + 2] * scale));
       }
 
-      // Step 5: Sharpen (3x3 unsharp mask)
-      const out = new Uint8ClampedArray(w * h);
+      // Step 5: Paper white push — near-white pixels blend toward pure white
+      // Makes receipt backgrounds crisp and clean like iOS Notes
+      for (let i = 0; i < totalPx; i++) {
+        const l = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+        if (l > 215) {
+          const t = Math.min(1, (l - 215) / 40); // ramp from 215→255
+          const blend = t * 0.6;
+          px[i * 4]     = Math.round(px[i * 4] + (255 - px[i * 4]) * blend);
+          px[i * 4 + 1] = Math.round(px[i * 4 + 1] + (255 - px[i * 4 + 1]) * blend);
+          px[i * 4 + 2] = Math.round(px[i * 4 + 2] + (255 - px[i * 4 + 2]) * blend);
+        }
+      }
+
+      // Step 6: Luminance-space sharpening (preserves colors, crisps text)
+      const lumF = new Float32Array(totalPx);
+      for (let i = 0; i < totalPx; i++) {
+        lumF[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+      }
+
+      const sharp = new Float32Array(totalPx);
       const kern = [0, -0.5, 0, -0.5, 3, -0.5, 0, -0.5, 0];
       for (let y = 1; y < h - 1; y++) {
         for (let x = 1; x < w - 1; x++) {
-          let sum = 0;
+          let s = 0;
           for (let ky = -1; ky <= 1; ky++) {
             for (let kx = -1; kx <= 1; kx++) {
-              sum += flat[(y + ky) * w + (x + kx)] * kern[(ky + 1) * 3 + (kx + 1)];
+              s += lumF[(y + ky) * w + (x + kx)] * kern[(ky + 1) * 3 + (kx + 1)];
             }
           }
-          out[y * w + x] = Math.max(0, Math.min(255, Math.round(sum)));
+          sharp[y * w + x] = Math.max(0, Math.min(255, s));
         }
       }
-      // Copy edges from flat
-      for (let x = 0; x < w; x++) { out[x] = flat[x]; out[(h - 1) * w + x] = flat[(h - 1) * w + x]; }
-      for (let y = 0; y < h; y++) { out[y * w] = flat[y * w]; out[y * w + w - 1] = flat[y * w + w - 1]; }
+      for (let x = 0; x < w; x++) { sharp[x] = lumF[x]; sharp[(h - 1) * w + x] = lumF[(h - 1) * w + x]; }
+      for (let y = 0; y < h; y++) { sharp[y * w] = lumF[y * w]; sharp[y * w + w - 1] = lumF[y * w + w - 1]; }
 
-      // Write back to imageData
-      for (let i = 0; i < out.length; i++) {
-        px[i * 4] = px[i * 4 + 1] = px[i * 4 + 2] = out[i];
-        px[i * 4 + 3] = 255;
+      // Transfer sharpening difference to RGB channels proportionally
+      for (let i = 0; i < totalPx; i++) {
+        const oldL = lumF[i];
+        if (oldL < 1) continue;
+        const scale = sharp[i] / oldL;
+        px[i * 4]     = Math.min(255, Math.max(0, Math.round(px[i * 4] * scale)));
+        px[i * 4 + 1] = Math.min(255, Math.max(0, Math.round(px[i * 4 + 1] * scale)));
+        px[i * 4 + 2] = Math.min(255, Math.max(0, Math.round(px[i * 4 + 2] * scale)));
       }
 
       ctx.putImageData(imageData, 0, 0);
-      resolve(canvas.toDataURL('image/jpeg', 0.90));
+      resolve(canvas.toDataURL('image/jpeg', 0.92));
     };
     img.src = dataURL;
   });
@@ -1698,8 +1773,13 @@ const DocumentScanner = (() => {
 
       let candidate = simplified;
 
-      // If 5-6 points, reduce to 4 by removing the vertex that changes the polygon least
-      while (candidate.length > 4 && candidate.length <= 6) {
+      // If too many points, try with larger epsilon first
+      if (candidate.length > 8) {
+        candidate = simplifyContour(hull, 0.04 * perim);
+      }
+
+      // Reduce to 4 by iteratively removing the least-impactful vertex
+      while (candidate.length > 4 && candidate.length <= 10) {
         let minImpact = Infinity;
         let minIdx = 0;
         for (let i = 0; i < candidate.length; i++) {
@@ -1714,7 +1794,8 @@ const DocumentScanner = (() => {
 
       if (candidate.length === 4) {
         const cArea = contourArea(candidate);
-        if (isConvex(candidate) && cArea > imageArea * 0.05 && cArea < imageArea * 0.80) {
+        // Relaxed: receipts often fill 80-95% of frame
+        if (isConvex(candidate) && cArea > imageArea * 0.10 && cArea < imageArea * 0.98) {
           quad = candidate;
         }
       }
@@ -1809,6 +1890,10 @@ const CameraScanner = (() => {
 
   function capture() {
     const vid = video();
+    if (vid.videoWidth === 0 || vid.videoHeight === 0) {
+      alert('Camera not ready — try again');
+      return;
+    }
     const canvas = document.createElement('canvas');
     // Use the actual video resolution for max quality
     canvas.width = vid.videoWidth;
@@ -1891,9 +1976,7 @@ const OCR = (() => {
   }
 
   async function recognize(imageDataURL) {
-    // scanImage already handles resize, grayscale, contrast, and sharpening
-    // so prepareImage is no longer needed in the normal flow.
-    // Still available as fallback if recognize is called directly.
+    // scanImage handles resize, enhancement, contrast, and sharpening
     const w = await getWorker();
     const { data } = await w.recognize(imageDataURL);
     return { text: data.text, confidence: data.confidence / 100 };
@@ -2982,11 +3065,8 @@ const Tutorial = (() => {
 
   // Wire up "Add Gas" button in Gas Log view
   document.getElementById('btn-add-gas').addEventListener('click', () => {
+    AddReceipt._pendingCategory = 'Gas';
     Router.navigate('add');
-    setTimeout(() => {
-      document.getElementById('field-category').value = 'Gas';
-      document.getElementById('field-gas').checked = true;
-    }, 50);
   });
 
   // Clean up any leftover demo data from a previous tutorial
@@ -2999,8 +3079,11 @@ const Tutorial = (() => {
       const vf = document.getElementById('camera-viewfinder');
       if (vf && vf.style.display !== 'none') { CameraScanner.close(); return; }
       // Close any open modal
-      const modal = document.querySelector('.modal-overlay[style*="flex"]');
-      if (modal) modal.style.display = 'none';
+      document.querySelectorAll('.modal-overlay').forEach(m => {
+        if (getComputedStyle(m).display !== 'none') {
+          m.style.display = 'none';
+        }
+      });
     }
   });
 
