@@ -874,6 +874,13 @@ const AddReceipt = (() => {
       console.warn('Image enhancement failed, using source:', scanErr);
     }
 
+    // Step 2b: Trim whitespace/background around receipt
+    try {
+      enhancedURL = await trimToContent(enhancedURL);
+    } catch (trimErr) {
+      console.warn('Content trim failed, using enhanced image:', trimErr);
+    }
+
     // Step 3: Store and display the enhanced image
     photoData = await compressPhoto(enhancedURL);
     document.getElementById('photo-preview-img').src = photoData;
@@ -1315,6 +1322,88 @@ async function scanImage(dataURL, maxWidth = 1500) {
       ctx.putImageData(imageData, 0, 0);
       resolve(canvas.toDataURL('image/jpeg', 0.92));
     };
+    img.src = dataURL;
+  });
+}
+
+// ─── Content-Aware Trim ─────────────────────────────────────────────────────
+// Trims uniform background rows/columns from edges of an enhanced receipt image
+function trimToContent(dataURL, padding = 10) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const px = imageData.data;
+      const w = canvas.width;
+      const h = canvas.height;
+
+      // Helper: luminance of pixel at (x, y)
+      function lum(x, y) {
+        const idx = (y * w + x) * 4;
+        return 0.299 * px[idx] + 0.587 * px[idx + 1] + 0.114 * px[idx + 2];
+      }
+
+      // Check if a row is uniform (no content) by sampling every 4th pixel
+      function isRowUniform(y) {
+        let minL = 255, maxL = 0;
+        for (let x = 0; x < w; x += 4) {
+          const l = lum(x, y);
+          if (l < minL) minL = l;
+          if (l > maxL) maxL = l;
+        }
+        return (maxL - minL) < 30;
+      }
+
+      // Check if a column is uniform by sampling every 4th pixel
+      function isColUniform(x) {
+        let minL = 255, maxL = 0;
+        for (let y = 0; y < h; y += 4) {
+          const l = lum(x, y);
+          if (l < minL) minL = l;
+          if (l > maxL) maxL = l;
+        }
+        return (maxL - minL) < 30;
+      }
+
+      // Find content bounds
+      let top = 0;
+      while (top < h && isRowUniform(top)) top++;
+      let bottom = h - 1;
+      while (bottom > top && isRowUniform(bottom)) bottom--;
+      let left = 0;
+      while (left < w && isColUniform(left)) left++;
+      let right = w - 1;
+      while (right > left && isColUniform(right)) right--;
+
+      // Safety check: if trim would remove >50% in either dimension, skip
+      const contentW = right - left + 1;
+      const contentH = bottom - top + 1;
+      if (contentW < w * 0.5 || contentH < h * 0.5) {
+        resolve(dataURL);
+        return;
+      }
+
+      // Apply padding
+      top = Math.max(0, top - padding);
+      bottom = Math.min(h - 1, bottom + padding);
+      left = Math.max(0, left - padding);
+      right = Math.min(w - 1, right + padding);
+
+      const trimW = right - left + 1;
+      const trimH = bottom - top + 1;
+      const trimCanvas = document.createElement('canvas');
+      trimCanvas.width = trimW;
+      trimCanvas.height = trimH;
+      const trimCtx = trimCanvas.getContext('2d');
+      trimCtx.drawImage(canvas, left, top, trimW, trimH, 0, 0, trimW, trimH);
+      resolve(trimCanvas.toDataURL('image/jpeg', 0.92));
+    };
+    img.onerror = () => resolve(dataURL);
     img.src = dataURL;
   });
 }
@@ -2024,7 +2113,7 @@ const OCR = (() => {
     const result = { store: null, amount: null, date: null, category: null, items: [], subtotal: null, tax: null };
 
     // --- Amount: look for TOTAL line, take last match ---
-    const totalRe = /(?:TOTAL|GRAND\s*TOTAL|AMOUNT\s*DUE|BALANCE\s*DUE|AMT\s*DUE)\s*[:$]?\s*\$?\s*(\d+[.,]\d{2})/gi;
+    const totalRe = /(?:TOTAL|GRAND\s*TOTAL|AMOUNT\s*DUE|BALANCE\s*DUE|AMT\s*DUE|SALE\s*TOTAL|ORDER\s*TOTAL|NET\s*TOTAL|PURCHASE\s*TOTAL|RECEIPT\s*TOTAL|YOUR\s*TOTAL|TRANS\s*TOTAL)\s*[:$]?\s*\$?\s*(\d+[.,]\d{2})/gi;
     let totalMatch, lastTotal = null;
     while ((totalMatch = totalRe.exec(text)) !== null) {
       lastTotal = totalMatch[1].replace(',', '.');
@@ -2032,11 +2121,18 @@ const OCR = (() => {
     if (lastTotal) {
       result.amount = parseFloat(lastTotal).toFixed(2);
     } else {
-      const amountRe = /\$?\s*(\d{1,6}\.\d{2})/g;
-      let amtMatch, largest = 0;
-      while ((amtMatch = amountRe.exec(text)) !== null) {
-        const v = parseFloat(amtMatch[1]);
-        if (v > largest && v < 100000) largest = v;
+      // Fallback: find largest dollar amount, but skip payment/change lines
+      const PAYMENT_LINE = /\b(CHANGE\s*DUE|CASH\s*BACK|CASH\s*TENDERED|TENDER\b|AMOUNT\s*TENDERED|CASH\b|CARD\b|VISA\b|MASTERCARD|MASTER\s*CARD|DEBIT\b|CREDIT\b|AMEX\b|DISCOVER\b|CHECK\b|EBT\b)/i;
+      const amountLineRe = /\$?\s*(\d{1,6}\.\d{2})/g;
+      let largest = 0;
+      for (const line of lines) {
+        if (PAYMENT_LINE.test(line)) continue;
+        let amtMatch;
+        const lineAmountRe = /\$?\s*(\d{1,6}\.\d{2})/g;
+        while ((amtMatch = lineAmountRe.exec(line)) !== null) {
+          const v = parseFloat(amtMatch[1]);
+          if (v > largest && v < 100000) largest = v;
+        }
       }
       if (largest > 0) result.amount = largest.toFixed(2);
     }
@@ -2080,9 +2176,22 @@ const OCR = (() => {
       { re: /ACE\s*HARDWARE/i, name: 'Ace Hardware', cat: 'Materials' },
       { re: /HARBOR\s*FREIGHT/i, name: 'Harbor Freight', cat: 'Tools' },
       { re: /SHERWIN[\s-]*WILLIAMS/i, name: 'Sherwin-Williams', cat: 'Materials' },
+      { re: /TRUE\s*VALUE/i, name: 'True Value', cat: 'Materials' },
+      { re: /NORTHERN\s*TOOL/i, name: 'Northern Tool', cat: 'Tools' },
+      { re: /FASTENAL/i, name: 'Fastenal', cat: 'Materials' },
+      { re: /GRAINGER/i, name: 'Grainger', cat: 'Materials' },
+      { re: /FERGUSON/i, name: 'Ferguson', cat: 'Materials' },
+      { re: /TRACTOR\s*SUPPLY/i, name: 'Tractor Supply', cat: 'Materials' },
+      { re: /RURAL\s*KING/i, name: 'Rural King', cat: 'Materials' },
+      { re: /FLOOR\s*[&+]\s*DECOR/i, name: 'Floor & Decor', cat: 'Materials' },
       { re: /WALMART/i, name: 'Walmart', cat: 'Materials' },
       { re: /TARGET/i, name: 'Target', cat: 'Materials' },
       { re: /COSTCO/i, name: 'Costco', cat: 'Materials' },
+      { re: /SAM'?S\s*CLUB/i, name: "Sam's Club", cat: 'Materials' },
+      { re: /AUTOZONE|AUTO\s*ZONE/i, name: 'AutoZone', cat: 'Materials' },
+      { re: /O'?\s*REILLY/i, name: "O'Reilly", cat: 'Materials' },
+      { re: /ADVANCE\s*AUTO/i, name: 'Advance Auto', cat: 'Materials' },
+      { re: /NAPA\b/i, name: 'NAPA', cat: 'Materials' },
       { re: /SHELL/i, name: 'Shell', cat: 'Gas' },
       { re: /EXXON/i, name: 'Exxon', cat: 'Gas' },
       { re: /CHEVRON/i, name: 'Chevron', cat: 'Gas' },
@@ -2095,6 +2204,16 @@ const OCR = (() => {
       { re: /SUNOCO/i, name: 'Sunoco', cat: 'Gas' },
       { re: /VALERO/i, name: 'Valero', cat: 'Gas' },
       { re: /7[\s-]*ELEVEN|7[\s-]*11/i, name: '7-Eleven', cat: 'Gas' },
+      { re: /MURPHY\s*USA/i, name: 'Murphy USA', cat: 'Gas' },
+      { re: /KUM\s*[&+]\s*GO/i, name: 'Kum & Go', cat: 'Gas' },
+      { re: /PILOT\b/i, name: 'Pilot', cat: 'Gas' },
+      { re: /FLYING\s*J/i, name: 'Flying J', cat: 'Gas' },
+      { re: /LOVE'?S/i, name: "Love's", cat: 'Gas' },
+      { re: /CIRCLE\s*K/i, name: 'Circle K', cat: 'Gas' },
+      { re: /SHEETZ/i, name: 'Sheetz', cat: 'Gas' },
+      { re: /BUC[\s-]*EE'?S/i, name: "Buc-ee's", cat: 'Gas' },
+      { re: /RACETRAC/i, name: 'RaceTrac', cat: 'Gas' },
+      { re: /KWIK\s*TRIP/i, name: 'Kwik Trip', cat: 'Gas' },
     ];
 
     for (const s of knownStores) {
@@ -2106,12 +2225,29 @@ const OCR = (() => {
     }
 
     if (!result.store) {
+      const PHONE_RE = /(\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}|\d{10}|\d{3}[\s.\-]\d{4})/;
+      const ADDRESS_RE = /\b\d+\s+\w+\s+(ST|AVE|BLVD|DR|RD|SUITE|STE|HWY|LN|CT|PL|WAY|STREET|AVENUE|BOULEVARD|DRIVE|ROAD|HIGHWAY|LANE|COURT|PLACE)\b\.?\s*,?/i;
+      const CITY_STATE_ZIP_RE = /\b[A-Z]{2}\s+\d{5}(-\d{4})?\b/;
+      const URL_EMAIL_RE = /(www\.|\.com|\.net|\.org|@)/i;
+      const DATE_TIME_RE = /^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$|^\d{1,2}:\d{2}/;
+      const TRANS_ID_RE = /^(TRANS|RECEIPT|TICKET|ORDER|REF|AUTH|SEQUENCE|TRACE|TERM|TERMINAL|REGISTER|STORE)\s*[#:]?\s*\d/i;
+      const NO_REAL_LETTERS_RE = /^[^a-zA-Z]*$/;
+      const ZIP_AT_END_RE = /\b\d{5}(-\d{4})?\s*$/;
       for (let i = 0; i < Math.min(5, lines.length); i++) {
         const line = lines[i];
-        if (line.length >= 3 && line.length <= 40 && /[a-zA-Z]{2,}/.test(line) && !/^\d{3}[\s-]?\d{3}/.test(line) && !/^\d+\s+(N|S|E|W|North|South)/.test(line)) {
-          result.store = line;
-          break;
-        }
+        if (line.length < 3 || line.length > 40) continue;
+        if (!/[a-zA-Z]{2,}/.test(line)) continue;
+        if (PHONE_RE.test(line)) continue;
+        if (ADDRESS_RE.test(line)) continue;
+        if (CITY_STATE_ZIP_RE.test(line)) continue;
+        if (URL_EMAIL_RE.test(line)) continue;
+        if (DATE_TIME_RE.test(line)) continue;
+        if (TRANS_ID_RE.test(line)) continue;
+        if (NO_REAL_LETTERS_RE.test(line)) continue;
+        if (ZIP_AT_END_RE.test(line)) continue;
+        if (/^\d+\s+(N|S|E|W|North|South|East|West)\b/i.test(line)) continue;
+        result.store = line;
+        break;
       }
     }
 
